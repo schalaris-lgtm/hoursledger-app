@@ -603,7 +603,7 @@ function LoadingScreen({ text = "Loading…" }) {
 }
 
 function AuthScreen() {
-  const [mode, setMode] = useState("signin");
+  const [mode, setMode] = useState("signin"); // "signin" | "signup" | "forgot"
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -612,6 +612,15 @@ function AuthScreen() {
   const [busy, setBusy] = useState(false);
 
   async function submit() {
+    if (mode === "forgot") {
+      if (!email.trim()) { setError("Enter your email."); return; }
+      setError(""); setInfo(""); setBusy(true);
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+      setBusy(false);
+      if (error) setError(error.message);
+      else setInfo("If that email has an account, a reset link is on its way — check your inbox (and spam folder). The link may take a minute to arrive.");
+      return;
+    }
     if (!email.trim() || !password) { setError("Enter both your email and password."); return; }
     setError(""); setInfo(""); setBusy(true);
     if (mode === "signup") {
@@ -627,6 +636,9 @@ function AuthScreen() {
   function handleKeyDown(e) {
     if (e.key === "Enter") submit();
   }
+  function switchMode(next) {
+    setMode(next); setError(""); setInfo("");
+  }
 
   return (
     <CenteredScreen>
@@ -638,7 +650,7 @@ function AuthScreen() {
         </div>
         <div style={{ background: C.surface, borderRadius: 12, padding: 22, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 15, color: C.ink }}>
-            {mode === "signin" ? "Sign in" : "Create your account"}
+            {mode === "signin" ? "Sign in" : mode === "signup" ? "Create your account" : "Reset your password"}
           </div>
           {mode === "signup" && (
             <Field label="Full name">
@@ -648,16 +660,87 @@ function AuthScreen() {
           <Field label="Work email">
             <input type="text" style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={handleKeyDown} placeholder="name@acco.gr" />
           </Field>
-          <Field label="Password">
-            <input type="password" style={inputStyle} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown} placeholder="At least 6 characters" />
-          </Field>
+          {mode !== "forgot" && (
+            <Field label="Password">
+              <input type="password" style={inputStyle} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown} placeholder="At least 6 characters" />
+            </Field>
+          )}
           {error && <div style={{ fontFamily: sans, fontSize: 12.5, color: C.danger, background: C.dangerSoft, padding: "8px 10px", borderRadius: 6 }}>{error}</div>}
           {info && <div style={{ fontFamily: sans, fontSize: 12.5, color: C.accentDark, background: C.accentSoft, padding: "8px 10px", borderRadius: 6 }}>{info}</div>}
-          <Btn onClick={submit} disabled={busy}>{mode === "signin" ? "Sign in" : "Create account"}</Btn>
-          <button type="button" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); setInfo(""); }}
-            style={{ background: "none", border: "none", cursor: "pointer", color: C.inkMuted, fontFamily: sans, fontSize: 12.5, textAlign: "center" }}>
-            {mode === "signin" ? "Need an account? Sign up" : "Already have an account? Sign in"}
-          </button>
+          <Btn onClick={submit} disabled={busy}>
+            {mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+          </Btn>
+          {mode === "signin" && (
+            <button type="button" onClick={() => switchMode("forgot")}
+              style={{ background: "none", border: "none", cursor: "pointer", color: C.inkMuted, fontFamily: sans, fontSize: 12.5, textAlign: "center" }}>
+              Forgot password?
+            </button>
+          )}
+          {mode !== "forgot" ? (
+            <button type="button" onClick={() => switchMode(mode === "signin" ? "signup" : "signin")}
+              style={{ background: "none", border: "none", cursor: "pointer", color: C.inkMuted, fontFamily: sans, fontSize: 12.5, textAlign: "center" }}>
+              {mode === "signin" ? "Need an account? Sign up" : "Already have an account? Sign in"}
+            </button>
+          ) : (
+            <button type="button" onClick={() => switchMode("signin")}
+              style={{ background: "none", border: "none", cursor: "pointer", color: C.inkMuted, fontFamily: sans, fontSize: 12.5, textAlign: "center" }}>
+              Back to sign in
+            </button>
+          )}
+        </div>
+      </div>
+    </CenteredScreen>
+  );
+}
+
+function UpdatePasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (password !== confirm) { setError("Passwords don't match."); return; }
+    setError(""); setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (error) { setError(error.message); return; }
+    setDone(true);
+  }
+  function handleKeyDown(e) {
+    if (e.key === "Enter") submit();
+  }
+
+  return (
+    <CenteredScreen>
+      <div style={{ width: 380, maxWidth: "100%" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginBottom: 24 }}>
+          <img src={LOGO_DATA_URI} alt="ACCO logo" style={{ width: 56, height: 56, objectFit: "contain" }} />
+          <span style={{ color: "#fff", fontWeight: 700, fontSize: 20, letterSpacing: 0.5 }}>GLORIA</span>
+          <span style={{ color: C.sidebarText, fontWeight: 500, fontSize: 12 }}>ACCOUNTING ACCO L.P.</span>
+        </div>
+        <div style={{ background: C.surface, borderRadius: 12, padding: 22, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 12 }}>
+          {done ? (
+            <>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 15, color: C.ink }}>Password updated</div>
+              <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>You can continue into HoursLedger now.</div>
+              <Btn onClick={onDone}>Continue</Btn>
+            </>
+          ) : (
+            <>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 15, color: C.ink }}>Set a new password</div>
+              <Field label="New password">
+                <input type="password" autoFocus style={inputStyle} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown} placeholder="At least 6 characters" />
+              </Field>
+              <Field label="Confirm new password">
+                <input type="password" style={inputStyle} value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={handleKeyDown} placeholder="Repeat the password" />
+              </Field>
+              {error && <div style={{ fontFamily: sans, fontSize: 12.5, color: C.danger, background: C.dangerSoft, padding: "8px 10px", borderRadius: 6 }}>{error}</div>}
+              <Btn onClick={submit} disabled={busy}>Update password</Btn>
+            </>
+          )}
         </div>
       </div>
     </CenteredScreen>
@@ -2692,11 +2775,15 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
 export default function App() {
   const [session, setSession] = useState(undefined);
   const [view, setView] = useState(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     if (!supabaseConfigured) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+      setSession(sess);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -2749,6 +2836,7 @@ export default function App() {
 
   if (!supabaseConfigured) return <SetupScreen />;
   if (session === undefined) return <LoadingScreen />;
+  if (passwordRecovery) return <UpdatePasswordScreen onDone={() => setPasswordRecovery(false)} />;
   if (!session) return <AuthScreen />;
   if (profilesLoading || !user) return <LoadingScreen text="Setting up your account…" />;
   if (!user.active) return <LoadingScreen text="This account has been deactivated. Contact your manager." />;
