@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, Users, Building2, Clock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, LogOut, X, Lock, Unlock, AlertTriangle,
-  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro
+  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend
@@ -59,6 +59,32 @@ const FontImport = () => (
 const TODAY = new Date();
 const CATEGORIES = ["accounting", "tax", "payroll", "other"];
 const CATEGORY_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other" };
+
+// Cost centers — the reporting dimension applied to every euro of revenue
+// (fixed fees split per client, extra fees tagged one by one) and of labor
+// cost (per employee: a fixed cost center, or spread by their logged hours).
+const COST_CENTERS = ["accounting", "tax", "payroll", "other", "director", "finance", "rental"];
+const COST_CENTER_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other", director: "Director", finance: "Finance", rental: "Rental" };
+// Departments group cost centers for the P&L: each cost center belongs to
+// exactly one department, so department totals reconcile to the company.
+const DEPARTMENTS = [
+  { key: "accounting_team", label: "Accounting Team ACCO", costCenters: ["accounting", "tax", "payroll", "other"] },
+  { key: "management_team", label: "Management Team", costCenters: ["director", "finance"] },
+  { key: "rental", label: "Rental", costCenters: ["rental"] },
+];
+const departmentOf = (cc) => DEPARTMENTS.find((d) => d.costCenters.includes(cc));
+
+// Rental expenses: booked per property and per month, in three categories.
+// They are non-labor cost of the Rental department / Rental cost center.
+const RENTAL_EXPENSE_CATEGORIES = ["rent", "utilities", "common_expenses"];
+const RENTAL_EXPENSE_LABELS = { rent: "Rental", utilities: "Utilities", common_expenses: "Common expenses" };
+const UNALLOCATED = "unallocated"; // fixed fees with no split yet, or cost of employees with no hours and no fixed cost center
+const DEFAULT_DEPARTMENT = "accounting_team";
+const departmentLabel = (key) => DEPARTMENTS.find((d) => d.key === key)?.label || key;
+const emptyByCC = () => Object.fromEntries([...COST_CENTERS, UNALLOCATED].map((k) => [k, 0]));
+const emptyFeeSplit = () => Object.fromEntries(COST_CENTERS.map((k) => [k, 0]));
+const feeSplitTotal = (s) => COST_CENTERS.reduce((t, k) => t + (Number(s?.[k]) || 0), 0);
+const costCenterLabel = (cc) => cc === UNALLOCATED ? "Unallocated" : (COST_CENTER_LABELS[cc] || cc);
 
 /* ---------------------------------------------------------------------- */
 /* Date helpers                                                            */
@@ -190,6 +216,8 @@ function currentFeeOf(client) {
   return {
     fixedFee: client.fixedFee,
     allocation: client.allocation || { accounting: 0, tax: 0, payroll: 0, other: 0 },
+    feeSplit: client.feeSplit || emptyFeeSplit(),
+    feeSplitNote: client.feeSplitNote || "",
   };
 }
 // The fee terms (fixed fee / category allocation) in effect on a given
@@ -239,21 +267,28 @@ function regimesInRange(history, fallbackValue, rangeStart, rangeEnd) {
 // range, accrued day by day (each entry's amount is spread evenly across
 // the days of the month it was billed for) — so it works for any period
 // length and any mix of months.
-function extraFeesAccruedForRange(client, rangeStart, rangeEnd) {
+// Same accrual, but broken down by the cost center each extra fee was
+// tagged with when it was added.
+function extraFeesByCostCenterForRange(client, rangeStart, rangeEnd) {
   const endDate = client.endDate ? fromKey(client.endDate) : null;
-  let total = 0;
+  const byCC = emptyByCC();
   let d = new Date(rangeStart);
   while (d <= rangeEnd) {
     if (!endDate || d <= endDate) {
       const monthKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-      const monthlyTotal = (client.extraFeeEntries || [])
-        .filter((e) => e.month === monthKey)
-        .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-      if (monthlyTotal) total += monthlyTotal / endOfMonth(d).getDate();
+      const daysInThisMonth = endOfMonth(d).getDate();
+      (client.extraFeeEntries || []).filter((e) => e.month === monthKey).forEach((e) => {
+        const cc = COST_CENTERS.includes(e.costCenter) ? e.costCenter : "other";
+        byCC[cc] += (Number(e.amount) || 0) / daysInThisMonth;
+      });
     }
     d = addDays(d, 1);
   }
-  return total;
+  return byCC;
+}
+function extraFeesAccruedForRange(client, rangeStart, rangeEnd) {
+  const byCC = extraFeesByCostCenterForRange(client, rangeStart, rangeEnd);
+  return Object.values(byCC).reduce((s, v) => s + v, 0);
 }
 
 function periodClientMetrics(client, periodEntries, rangeStart, rangeEnd) {
@@ -261,12 +296,19 @@ function periodClientMetrics(client, periodEntries, rangeStart, rangeEnd) {
   const startDate = startDateKey ? fromKey(startDateKey) : null;
   const endDate = client.endDate ? fromKey(client.endDate) : null;
   const regimes = regimesInRange(client.feeHistory, currentFeeOf(client), rangeStart, rangeEnd);
-  let revenue = extraFeesAccruedForRange(client, rangeStart, rangeEnd);
+  // Revenue by cost center: extra fees carry their own tag; the fixed fee
+  // follows the €-split recorded in the fee terms in effect on each day.
+  // Any part of a fixed fee that has no split goes to "Unallocated" so the
+  // totals still reconcile and the gap is visible on the dashboard.
+  const revenueByCostCenter = extraFeesByCostCenterForRange(client, rangeStart, rangeEnd);
+  let revenue = Object.values(revenueByCostCenter).reduce((s, v) => s + v, 0);
   const allocationByCategory = { accounting: 0, tax: 0, payroll: 0, other: 0 };
   let hasAllocation = false;
   regimes.forEach((seg) => {
     const fee = seg.value;
     const alloc = fee.allocation || {};
+    const split = fee.feeSplit || {};
+    const splitTotal = feeSplitTotal(split);
     let d = new Date(seg.start);
     while (d <= seg.end) {
       // Skip any day before the fee terms you set actually started
@@ -274,7 +316,12 @@ function periodClientMetrics(client, periodEntries, rangeStart, rangeEnd) {
       // and any day after the client's end date, if one is set.
       if ((!startDate || d >= startDate) && (!endDate || d <= endDate)) {
         const daysInThisMonth = endOfMonth(d).getDate();
-        if (fee.fixedFee) revenue += fee.fixedFee / daysInThisMonth;
+        if (fee.fixedFee) {
+          revenue += fee.fixedFee / daysInThisMonth;
+          COST_CENTERS.forEach((cc) => { if (split[cc]) revenueByCostCenter[cc] += split[cc] / daysInThisMonth; });
+          const remainder = fee.fixedFee - splitTotal;
+          if (remainder > 0.005) revenueByCostCenter[UNALLOCATED] += remainder / daysInThisMonth;
+        }
         CATEGORIES.forEach((cat) => {
           if (alloc[cat]) { allocationByCategory[cat] += alloc[cat] / daysInThisMonth; hasAllocation = true; }
         });
@@ -288,7 +335,68 @@ function periodClientMetrics(client, periodEntries, rangeStart, rangeEnd) {
     actualByCategory[cat] += e.hours;
   });
   const allocation = hasAllocation ? CATEGORIES.reduce((s, c) => s + allocationByCategory[c], 0) : null;
-  return { revenue, allocation, allocationByCategory, actualByCategory };
+  return { revenue, allocation, allocationByCategory, actualByCategory, revenueByCostCenter };
+}
+
+// Spreads an employee's labor cost for a period across the cost centers of
+// their DEPARTMENT:
+// - Accounting Team: by the categories of the hours they logged in the period
+//   (accounting / tax / payroll / other);
+// - otherwise (or with no hours logged): in proportion to the department's
+//   revenue by cost center in the same period — e.g. Management Team cost is
+//   split between Director and Finance the way their fees are;
+// - if the department has neither hours nor revenue to go by: a single-cost-
+//   center department gets it all, otherwise it stays "Unallocated" (still
+//   counted in the department's own P&L).
+function employeeCostByCostCenter(employee, cost, empPeriodEntries, deptRevenueByCC) {
+  const byCC = emptyByCC();
+  if (!(cost > 0)) return byCC;
+  const dep = DEPARTMENTS.find((d) => d.key === (employee.department || DEFAULT_DEPARTMENT)) || DEPARTMENTS[0];
+  if (dep.key === "accounting_team") {
+    const totalHours = empPeriodEntries.reduce((s, e) => s + e.hours, 0);
+    if (totalHours > 0) {
+      empPeriodEntries.forEach((e) => {
+        const cat = CATEGORIES.includes(e.category) ? e.category : "other";
+        byCC[cat] += cost * (e.hours / totalHours);
+      });
+      return byCC;
+    }
+  }
+  const depRevenue = dep.costCenters.reduce((s, cc) => s + (deptRevenueByCC?.[cc] || 0), 0);
+  if (depRevenue > 0) {
+    dep.costCenters.forEach((cc) => { byCC[cc] += cost * ((deptRevenueByCC[cc] || 0) / depRevenue); });
+  } else if (dep.costCenters.length === 1) {
+    byCC[dep.costCenters[0]] += cost;
+  } else {
+    byCC[UNALLOCATED] += cost;
+  }
+  return byCC;
+}
+
+// Rental expenses that fall within a date range, accrued day by day (each
+// entry is spread evenly over the days of the month it was booked for) —
+// the same period-agnostic rule used for extra fees, so weekly, monthly,
+// quarterly and annual views all reconcile.
+function rentalExpensesForRange(expenses, rangeStart, rangeEnd) {
+  const byCategory = Object.fromEntries(RENTAL_EXPENSE_CATEGORIES.map((k) => [k, 0]));
+  const byProperty = {};
+  let total = 0;
+  let d = new Date(rangeStart);
+  while (d <= rangeEnd) {
+    const monthKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    const daysInThisMonth = endOfMonth(d).getDate();
+    (expenses || []).filter((x) => x.month === monthKey).forEach((x) => {
+      const amt = (Number(x.amount) || 0) / daysInThisMonth;
+      const cat = RENTAL_EXPENSE_CATEGORIES.includes(x.category) ? x.category : "rent";
+      byCategory[cat] += amt;
+      if (!byProperty[x.propertyId]) byProperty[x.propertyId] = Object.fromEntries([...RENTAL_EXPENSE_CATEGORIES, "total"].map((k) => [k, 0]));
+      byProperty[x.propertyId][cat] += amt;
+      byProperty[x.propertyId].total += amt;
+      total += amt;
+    });
+    d = addDays(d, 1);
+  }
+  return { total, byCategory, byProperty };
 }
 
 // Labor cost for an employee over an arbitrary date range, accrued day by
@@ -835,9 +943,9 @@ function TableShell({ headers, children }) {
     </div>
   );
 }
-function Td({ children, mono: isMono, right, style }) {
+function Td({ children, mono: isMono, right, style, title }) {
   return (
-    <td style={{
+    <td title={title} style={{
       padding: "8px 8px", borderBottom: `1px solid ${C.border}`, color: C.ink,
       fontFamily: isMono ? mono : sans, textAlign: right ? "right" : "left", fontWeight: isMono ? 600 : 400,
       ...style,
@@ -861,6 +969,7 @@ function Sidebar({ user, view, setView }) {
     { key: "calendar", label: "Calendar", icon: CalendarRange },
     { key: "clients", label: "Clients", icon: Building2 },
     { key: "employees", label: "Employees", icon: Users },
+    { key: "rental", label: "Rental", icon: Home },
   ];
   const items = user.role === "admin" ? adminNav : employeeNav;
   return (
@@ -937,13 +1046,20 @@ function useTable(table, mapRow, orderColumn) {
   return [rows, refetch, loading];
 }
 
-const mapProfile = (r) => ({ id: r.id, name: r.name, email: r.email, title: r.title, role: r.role, weeklyHours: Number(r.weekly_hours), annualLeaveDays: Number(r.annual_leave_days), active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null });
+const mapProfile = (r) => ({ id: r.id, name: r.name, email: r.email, title: r.title, role: r.role, weeklyHours: Number(r.weekly_hours), annualLeaveDays: Number(r.annual_leave_days), active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null, department: r.department || DEFAULT_DEPARTMENT });
 const mapCostHistory = (r) => ({ id: r.id, employeeId: r.employee_id, effectiveDate: r.effective_date, grossSalary: Number(r.gross_salary), socialSecurity: Number(r.social_security), ticketRestaurant: Number(r.ticket_restaurant), insurance: Number(r.insurance), otherCost: Number(r.other_cost) });
 const mapClientRow = (r) => ({ id: r.id, name: r.name, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee), endDate: r.end_date || null, active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null });
-const mapFeeHistory = (r) => ({ id: r.id, clientId: r.client_id, effectiveDate: r.effective_date, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee), allocation: { accounting: Number(r.alloc_accounting), tax: Number(r.alloc_tax), payroll: Number(r.alloc_payroll), other: Number(r.alloc_other) } });
-const mapExtraFee = (r) => ({ id: r.id, clientId: r.client_id, month: r.month, amount: Number(r.amount), note: r.note || "" });
+const mapFeeHistory = (r) => ({
+  id: r.id, clientId: r.client_id, effectiveDate: r.effective_date, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee),
+  allocation: { accounting: Number(r.alloc_accounting), tax: Number(r.alloc_tax), payroll: Number(r.alloc_payroll), other: Number(r.alloc_other) },
+  feeSplit: Object.fromEntries(COST_CENTERS.map((cc) => [cc, Number(r[`cc_${cc}`]) || 0])),
+  feeSplitNote: r.cc_other_note || "",
+});
+const mapExtraFee = (r) => ({ id: r.id, clientId: r.client_id, month: r.month, amount: Number(r.amount), note: r.note || "", costCenter: r.cost_center || "other" });
 const mapEntry = (r) => ({ id: r.id, employeeId: r.employee_id, clientId: r.client_id, date: r.entry_date, hours: Number(r.hours), category: r.category, note: r.note || "" });
 const mapLockedWeek = (r) => `${r.employee_id}|${r.week_start}`;
+const mapRentalProperty = (r) => ({ id: r.id, name: r.name, address: r.address || "", note: r.note || "", active: r.active });
+const mapRentalExpense = (r) => ({ id: r.id, propertyId: r.property_id, month: r.month, category: r.category, amount: Number(r.amount), note: r.note || "" });
 const mapLeaveRequest = (r) => ({ id: r.id, employeeId: r.employee_id, startDate: r.start_date, endDate: r.end_date, type: r.type, note: r.note || "", status: r.status, decidedBy: r.decided_by, decidedAt: r.decided_at });
 
 // A small shared key/value setting (e.g. Dashboard "Customize" choices),
@@ -1527,12 +1643,12 @@ function TeamCalendar({ employees, leaveRequests }) {
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
 
-function AdminDashboard({ employees, clients, entries }) {
+function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, allocationChart: true, revenueCostChart: true,
-    byClientTable: true, byEmployeeTable: true,
+    byClientTable: true, byEmployeeTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
@@ -1551,16 +1667,21 @@ function AdminDashboard({ employees, clients, entries }) {
   // Each employee's own hours and labor cost for the period, computed
   // once and reused below both to attribute cost to clients and to show
   // per-employee profitability.
-  const employeeCosts = employees.filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rangeEnd))).map((emp) => ({
-    id: emp.id,
-    hours: rangeEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0),
-    cost: periodEmployeeCost(emp, rangeStart, rangeEnd),
-  }));
+  const employeeCosts = employees.filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rangeEnd))).map((emp) => {
+    const empEntries = rangeEntries.filter((e) => e.employeeId === emp.id);
+    return {
+      id: emp.id,
+      department: emp.department || DEFAULT_DEPARTMENT,
+      entries: empEntries,
+      hours: empEntries.reduce((s, e) => s + e.hours, 0),
+      cost: periodEmployeeCost(emp, rangeStart, rangeEnd),
+    };
+  });
 
   const byClient = clients.filter((c) => c.active && (!earliestHistoryDate(c.feeHistory) || earliestHistoryDate(c.feeHistory) <= toKey(rangeEnd))).map((c) => {
     const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
     const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
-    const { revenue, allocation } = periodClientMetrics(c, clientEntries, rangeStart, rangeEnd);
+    const { revenue, allocation, revenueByCostCenter } = periodClientMetrics(c, clientEntries, rangeStart, rangeEnd);
     // Attribute each employee's labor cost to this client proportionally
     // to the hours they spent on it — the mirror image of how revenue is
     // attributed to employees below.
@@ -1571,7 +1692,7 @@ function AdminDashboard({ employees, clients, entries }) {
     }, 0);
     const profit = revenue - cost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : null;
-    return { ...c, hours: hrs, allocation, revenue, effectiveRate: hrs > 0 ? revenue / hrs : null, cost, profit, margin };
+    return { ...c, hours: hrs, allocation, revenue, revenueByCostCenter, effectiveRate: hrs > 0 ? revenue / hrs : null, cost, profit, margin };
   }).sort((a, b) => b.hours - a.hours);
 
   const totalRevenue = byClient.reduce((s, c) => s + c.revenue, 0);
@@ -1596,9 +1717,58 @@ function AdminDashboard({ employees, clients, entries }) {
     return { ...emp, hours: hrs, clientsTouched, revenue, effectiveRate: hrs > 0 ? revenue / hrs : null, cost, profit, margin };
   }).sort((a, b) => b.hours - a.hours);
 
-  const totalCost = byEmployee.reduce((s, e) => s + e.cost, 0);
+  const totalLaborCost = byEmployee.reduce((s, e) => s + e.cost, 0);
+  // Non-labor cost: rental expenses (rent, utilities, common expenses) booked
+  // per property and month — all of it belongs to the Rental cost center.
+  const rentalExp = rentalExpensesForRange(rentalExpenses, rangeStart, rangeEnd);
+  const totalCost = totalLaborCost + rentalExp.total;
   const totalProfit = totalRevenue - totalCost;
   const overallMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : null;
+
+  // Revenue per cost center first (needed as the allocation key for
+  // departments that don't log hours), then each employee's cost spread
+  // across their department's cost centers.
+  const revenueByCC = emptyByCC();
+  byClient.forEach((c) => { Object.keys(revenueByCC).forEach((cc) => { revenueByCC[cc] += c.revenueByCostCenter?.[cc] || 0; }); });
+  employeeCosts.forEach((ec) => {
+    const emp = employees.find((e) => e.id === ec.id);
+    ec.byCostCenter = employeeCostByCostCenter(emp, ec.cost, ec.entries, revenueByCC);
+  });
+  const costByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
+  costByDepartment.rental += rentalExp.total;
+  const unallocatedCostByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
+  employeeCosts.forEach((ec) => {
+    costByDepartment[ec.department] = (costByDepartment[ec.department] || 0) + ec.cost;
+    unallocatedCostByDepartment[ec.department] = (unallocatedCostByDepartment[ec.department] || 0) + (ec.byCostCenter[UNALLOCATED] || 0);
+  });
+
+  // Revenue, labor cost and profit per cost center for the period. The
+  // rows add up to the same totals as the cards above; "Unallocated" only
+  // appears when some fixed fee has no split yet or a department's cost had
+  // no hours or revenue to spread it by.
+  const byCostCenter = [...COST_CENTERS, UNALLOCATED].map((cc) => {
+    const revenue = revenueByCC[cc] || 0;
+    const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0) + (cc === "rental" ? rentalExp.total : 0);
+    const profit = revenue - cost;
+    const margin = revenue > 0 ? (profit / revenue) * 100 : null;
+    return { key: cc, label: costCenterLabel(cc), revenue, cost, profit, margin };
+  }).filter((r) => r.key !== UNALLOCATED || r.revenue > 0.005 || r.cost > 0.005);
+  const costCenterChartData = byCostCenter.map((r) => ({ name: r.label, Revenue: Number(r.revenue.toFixed(2)), Cost: Number(r.cost.toFixed(2)) }));
+
+  // Department P&L: revenue = its cost centers' revenue; cost = the labor
+  // cost of the employees assigned to the department (including any part
+  // not attributable to a single cost center). "Unallocated" revenue (fixed
+  // fees with no split yet) is listed on its own so the total reconciles.
+  const byDepartment = DEPARTMENTS.map((dep) => {
+    const rows = byCostCenter.filter((r) => dep.costCenters.includes(r.key));
+    const revenue = rows.reduce((s, r) => s + r.revenue, 0);
+    const cost = costByDepartment[dep.key] || 0;
+    const profit = revenue - cost;
+    const headcount = employeeCosts.filter((ec) => ec.department === dep.key).length;
+    return { key: dep.key, label: dep.label, costCenters: rows, unallocatedCost: unallocatedCostByDepartment[dep.key] || 0, headcount, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+  });
+  const unallocatedRevenue = revenueByCC[UNALLOCATED] || 0;
+  const unallocatedRow = unallocatedRevenue > 0.005 ? { revenue: unallocatedRevenue, cost: 0, profit: unallocatedRevenue } : null;
 
   // Clients/employees that first started within THIS period specifically
   // (not just "existing by now") — driven by the same "Effective from" /
@@ -1658,7 +1828,8 @@ function AdminDashboard({ employees, clients, entries }) {
     const newClients = clients.filter((c) => c.createdAt && fromKey(c.createdAt) >= m.start && fromKey(c.createdAt) <= m.end).length;
     const monthEntries = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
     const revenue = clients.filter((c) => c.active).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
-    const cost = employees.filter((e) => e.active).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0);
+    const cost = employees.filter((e) => e.active).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
+      + rentalExpensesForRange(rentalExpenses, m.start, m.end).total;
     return { label: m.label, newClients, revenue, cost, profit: revenue - cost };
   });
 
@@ -1684,6 +1855,23 @@ function AdminDashboard({ employees, clients, entries }) {
         "Revenue (€)": Number(e.revenue.toFixed(2)), "Cost (€)": Number(e.cost.toFixed(2)), "Profit (€)": Number(e.profit.toFixed(2)),
         "Margin (%)": e.margin !== null ? Number(e.margin.toFixed(1)) : "",
       })) },
+      { name: "By department", rows: [
+        ...byDepartment.map((d) => ({
+          Department: d.label, "Revenue (€)": Number(d.revenue.toFixed(2)), "Cost (€)": Number(d.cost.toFixed(2)),
+          "Profit (€)": Number(d.profit.toFixed(2)), "Margin (%)": d.margin !== null ? Number(d.margin.toFixed(1)) : "",
+        })),
+        ...(unallocatedRow ? [{ Department: "Fees with no split yet", "Revenue (€)": Number(unallocatedRow.revenue.toFixed(2)), "Cost (€)": 0, "Profit (€)": Number(unallocatedRow.profit.toFixed(2)), "Margin (%)": "" }] : []),
+        { Department: "Total", "Revenue (€)": Number(totalRevenue.toFixed(2)), "Cost (€)": Number(totalCost.toFixed(2)), "Profit (€)": Number(totalProfit.toFixed(2)), "Margin (%)": overallMargin !== null ? Number(overallMargin.toFixed(1)) : "" },
+      ] },
+      { name: "Rental expenses", rows: rentalProperties.map((pr) => {
+        const x = rentalExp.byProperty[pr.id] || {};
+        return { Property: pr.name, ...Object.fromEntries(RENTAL_EXPENSE_CATEGORIES.map((k) => [`${RENTAL_EXPENSE_LABELS[k]} (€)`, Number((x[k] || 0).toFixed(2))])), "Total (€)": Number((x.total || 0).toFixed(2)) };
+      }) },
+      { name: "By cost center", rows: byCostCenter.map((r) => ({
+        Department: departmentOf(r.key)?.label || "Unallocated", "Cost center": r.label,
+        "Revenue (€)": Number(r.revenue.toFixed(2)), "Cost (€)": Number(r.cost.toFixed(2)),
+        "Profit (€)": Number(r.profit.toFixed(2)), "Margin (%)": r.margin !== null ? Number(r.margin.toFixed(1)) : "",
+      })) },
       { name: "Company by month", rows: companyMonthly.map((m) => ({
         Month: m.label, "New clients": m.newClients, "Revenue (€)": Number(m.revenue.toFixed(2)),
         "Cost (€)": Number(m.cost.toFixed(2)), "Profit (€)": Number(m.profit.toFixed(2)),
@@ -1693,7 +1881,7 @@ function AdminDashboard({ employees, clients, entries }) {
 
   const CONFIG_LABELS = {
     statCards: "Summary cards", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
-    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table",
+    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", departmentTable: "P&L by department", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
   };
@@ -1734,8 +1922,9 @@ function AdminDashboard({ employees, clients, entries }) {
           <StatCard label="New clients this period" value={newClientsThisPeriod.length} sub={newClientsThisPeriod.length ? newClientsThisPeriod.map(c=>c.name).join(", ") : "None started this period"} />
           <StatCard label="New employees this period" value={newEmployeesThisPeriod.length} sub={newEmployeesThisPeriod.length ? fmtEur(newHiresCost) + " added to labor cost" : "None started this period"} />
           <StatCard label="Revenue this period" value={fmtEur(totalRevenue)} accent={C.accent} sub="Fixed fees + extra fees" />
-          <StatCard label="Labor cost this period" value={fmtEur(totalCost)} sub="Gross + benefits, prorated" />
-          <StatCard label="Profit this period" value={fmtEur(totalProfit)} accent={totalProfit < 0 ? C.danger : C.accent} sub="Revenue − cost" />
+          <StatCard label="Labor cost this period" value={fmtEur(totalLaborCost)} sub="Gross + benefits, prorated" />
+          <StatCard label="Rental expenses this period" value={fmtEur(rentalExp.total)} sub="Rent + utilities + common expenses" />
+          <StatCard label="Profit this period" value={fmtEur(totalProfit)} accent={totalProfit < 0 ? C.danger : C.accent} sub="Revenue − labor − rental expenses" />
           <StatCard label="Overall margin" value={overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"} accent={overallMargin !== null && overallMargin < 0 ? C.danger : C.accent} sub="(Revenue − cost) ÷ revenue" />
           <StatCard label="Avg. effective rate" value={fmtEur(avgEffectiveRate) + "/h"} sub="Revenue ÷ hours worked" />
         </div>
@@ -1833,10 +2022,111 @@ function AdminDashboard({ employees, clients, entries }) {
         </Panel>
       )}
 
+      {config.departmentTable && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>P&amp;L by department</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+            {DEPARTMENTS.map((d) => `${d.label} = ${d.costCenters.map((cc) => COST_CENTER_LABELS[cc]).join(" / ")}`).join(" · ")}
+          </div>
+          <TableShell headers={["Department", "People", "Revenue", "Cost", "Profit", "Margin"]}>
+            {byDepartment.map((d) => (
+              <React.Fragment key={d.key}>
+                <tr style={{ fontWeight: 700, background: C.accentSoft }}>
+                  <Td>{d.label}</Td>
+                  <Td mono>{d.headcount}</Td>
+                  <Td mono>{fmtEur(d.revenue)}</Td>
+                  <Td mono>{fmtEur(d.cost)}</Td>
+                  <Td mono style={{ color: d.profit < 0 ? C.danger : undefined }}>{fmtEur(d.profit)}</Td>
+                  <Td>{d.margin !== null ? <Badge tone={d.margin < 0 ? "danger" : d.margin < 20 ? "warn" : "accent"}>{d.margin.toFixed(0)}%</Badge> : "—"}</Td>
+                </tr>
+                {d.costCenters.map((r) => (
+                  <tr key={r.key}>
+                    <Td style={{ paddingLeft: 28, color: C.inkMuted }}>{r.label}</Td>
+                    <Td />
+                    <Td mono style={{ color: C.inkMuted }}>{fmtEur(r.revenue)}</Td>
+                    <Td mono style={{ color: C.inkMuted }}>{fmtEur(r.cost)}</Td>
+                    <Td mono style={{ color: r.profit < 0 ? C.danger : C.inkMuted }}>{fmtEur(r.profit)}</Td>
+                    <Td style={{ color: C.inkMuted }}>{r.margin !== null ? r.margin.toFixed(0) + "%" : "—"}</Td>
+                  </tr>
+                ))}
+                {d.unallocatedCost > 0.005 && (
+                  <tr>
+                    <Td style={{ paddingLeft: 28, color: C.warn }}>Not attributable to a cost center</Td>
+                    <Td />
+                    <Td mono style={{ color: C.inkMuted }}>—</Td>
+                    <Td mono style={{ color: C.warn }}>{fmtEur(d.unallocatedCost)}</Td>
+                    <Td mono style={{ color: C.inkMuted }}>—</Td>
+                    <Td />
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+            {unallocatedRow && (
+              <tr style={{ opacity: 0.7 }}>
+                <Td><Badge tone="warn">Fees with no split yet</Badge></Td>
+                <Td />
+                <Td mono>{fmtEur(unallocatedRow.revenue)}</Td>
+                <Td mono>{fmtEur(unallocatedRow.cost)}</Td>
+                <Td mono style={{ color: unallocatedRow.profit < 0 ? C.danger : undefined }}>{fmtEur(unallocatedRow.profit)}</Td>
+                <Td>—</Td>
+              </tr>
+            )}
+            <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
+              <Td>Company total</Td>
+              <Td mono>{employeeCosts.length}</Td>
+              <Td mono>{fmtEur(totalRevenue)}</Td>
+              <Td mono>{fmtEur(totalCost)}</Td>
+              <Td mono style={{ color: totalProfit < 0 ? C.danger : undefined }}>{fmtEur(totalProfit)}</Td>
+              <Td>{overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"}</Td>
+            </tr>
+          </TableShell>
+        </Panel>
+      )}
+
+      {config.costCenterTable && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Revenue &amp; cost by cost center</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+            Fixed fees follow each client's cost-center split, extra fees their own tag. Labor cost follows each employee's department: Accounting Team by logged hours, other departments in proportion to the department's revenue by cost center. Rental expenses (rent, utilities, common expenses) are added to the Rental cost center.
+          </div>
+          <div style={{ width: "100%", height: 220, marginBottom: 14 }}>
+            <ResponsiveContainer>
+              <BarChart data={costCenterChartData} margin={{ left: -10, right: 10 }}>
+                <CartesianGrid stroke={C.border} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontFamily: sans, fontSize: 11, fill: C.inkMuted }} axisLine={{ stroke: C.border }} tickLine={false} />
+                <YAxis tick={{ fontFamily: mono, fontSize: 11, fill: C.inkMuted }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={{ fontFamily: sans, fontSize: 12.5, borderRadius: 8, border: `1px solid ${C.border}` }} formatter={(v) => fmtEur(v)} />
+                <Legend wrapperStyle={{ fontFamily: sans, fontSize: 12 }} />
+                <Bar dataKey="Revenue" fill={C.accent} radius={[4, 4, 0, 0]} maxBarSize={26} />
+                <Bar dataKey="Cost" fill={C.danger} radius={[4, 4, 0, 0]} maxBarSize={26} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <TableShell headers={["Cost center", "Revenue", "Cost", "Profit", "Margin"]}>
+            {byCostCenter.map((r) => (
+              <tr key={r.key} style={{ opacity: r.key === UNALLOCATED ? 0.7 : 1 }}>
+                <Td>{r.key === UNALLOCATED ? <Badge tone="warn">{r.label}</Badge> : r.label}</Td>
+                <Td mono>{fmtEur(r.revenue)}</Td>
+                <Td mono>{fmtEur(r.cost)}</Td>
+                <Td mono style={{ color: r.profit < 0 ? C.danger : undefined }}>{fmtEur(r.profit)}</Td>
+                <Td>{r.margin !== null ? <Badge tone={r.margin < 0 ? "danger" : r.margin < 20 ? "warn" : "accent"}>{r.margin.toFixed(0)}%</Badge> : "—"}</Td>
+              </tr>
+            ))}
+            <tr style={{ fontWeight: 700 }}>
+              <Td>Total</Td>
+              <Td mono>{fmtEur(totalRevenue)}</Td>
+              <Td mono>{fmtEur(totalCost)}</Td>
+              <Td mono style={{ color: totalProfit < 0 ? C.danger : undefined }}>{fmtEur(totalProfit)}</Td>
+              <Td>{overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"}</Td>
+            </tr>
+          </TableShell>
+        </Panel>
+      )}
+
       {config.companyMonthlyTable && (
         <Panel style={{ marginBottom: 18 }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Company overview, by month</div>
-          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>New clients, revenue, cost, and profit — last 6 months.</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>New clients, revenue, cost (labor + rental expenses), and profit — last 6 months.</div>
           <TableShell headers={["Month", "New clients", "Revenue", "Cost", "Profit"]}>
             {companyMonthly.map((m, i) => (
               <tr key={i}>
@@ -2092,6 +2382,8 @@ function AdminClients({ clients, refetchClients, entries }) {
   const [allocTax, setAllocTax] = useState("");
   const [allocPayroll, setAllocPayroll] = useState("");
   const [allocOther, setAllocOther] = useState("");
+  const [feeSplit, setFeeSplit] = useState(() => Object.fromEntries(COST_CENTERS.map((cc) => [cc, ""])));
+  const [feeSplitNote, setFeeSplitNote] = useState("");
   const [fixedFee, setFixedFee] = useState("");
   const [feeEffectiveDate, setFeeEffectiveDate] = useState(toKey(TODAY));
   const [endDate, setEndDate] = useState("");
@@ -2104,6 +2396,7 @@ function AdminClients({ clients, refetchClients, entries }) {
   const [extraFeeMonth, setExtraFeeMonth] = useState("");
   const [extraFeeAmount, setExtraFeeAmount] = useState("");
   const [extraFeeNote, setExtraFeeNote] = useState("");
+  const [extraFeeCostCenter, setExtraFeeCostCenter] = useState("accounting");
 
   function resetAllocFields(c) {
     const a = (c && c.allocation) || {};
@@ -2111,7 +2404,34 @@ function AdminClients({ clients, refetchClients, entries }) {
     setAllocTax(c ? String(a.tax || "") : "");
     setAllocPayroll(c ? String(a.payroll || "") : "");
     setAllocOther(c ? String(a.other || "") : "");
+    const sp = (c && c.feeSplit) || {};
+    setFeeSplit(Object.fromEntries(COST_CENTERS.map((cc) => [cc, c && sp[cc] ? String(sp[cc]) : ""])));
+    setFeeSplitNote(c ? (c.feeSplitNote || "") : "");
   }
+  // Builds the €-split from the form and checks it against the fixed fee.
+  // Returns { split, note } or null (after telling the user what's wrong).
+  function validatedFeeSplit(fee) {
+    const split = Object.fromEntries(COST_CENTERS.map((cc) => [cc, Number(feeSplit[cc]) || 0]));
+    const note = feeSplitNote.trim();
+    const total = feeSplitTotal(split);
+    if (fee && total > 0 && Math.abs(total - fee) > 0.01) {
+      window.alert(`The cost-center split adds up to ${fmtEur(total)}, but the fixed fee is ${fmtEur(fee)}. Adjust the split so it matches the fee (or leave all split fields empty to record the fee as unallocated for now).`);
+      return null;
+    }
+    if (!fee && total > 0) {
+      window.alert("You entered a cost-center split but no fixed fee. Enter the fixed fee first.");
+      return null;
+    }
+    if (split.other > 0 && !note) {
+      window.alert('Please add a note explaining what the "Other" part of the fee covers.');
+      return null;
+    }
+    return { split, note: split.other > 0 ? note : "" };
+  }
+  const feeSplitRow = (split, note) => Object.assign(
+    Object.fromEntries(COST_CENTERS.map((cc) => [`cc_${cc}`, split[cc] || 0])),
+    { cc_other_note: note || null },
+  );
   function openNew() {
     setModal("new"); setName(""); setFixedFee(""); setFeeEffectiveDate(toKey(TODAY)); setEndDate(""); setEditingHistoryId(null);
     resetAllocFields(null);
@@ -2130,6 +2450,9 @@ function AdminClients({ clients, refetchClients, entries }) {
       payroll: Number(allocPayroll) || 0,
       other: Number(allocOther) || 0,
     };
+    const splitResult = validatedFeeSplit(fee);
+    if (!splitResult) return;
+    const { split, note: splitNote } = splitResult;
     if (modal === "new") {
       const { data, error } = await supabase.from("clients").insert({ name: name.trim(), fixed_fee: fee, end_date: endDate || null }).select().single();
       if (error || !data) {
@@ -2139,6 +2462,7 @@ function AdminClients({ clients, refetchClients, entries }) {
       const { error: feeError } = await supabase.from("client_fee_history").insert({
         client_id: data.id, effective_date: feeEffectiveDate || toKey(TODAY), fixed_fee: fee,
         alloc_accounting: allocation.accounting, alloc_tax: allocation.tax, alloc_payroll: allocation.payroll, alloc_other: allocation.other,
+        ...feeSplitRow(split, splitNote),
       });
       if (feeError) {
         window.alert(`Client was created, but saving its fee terms failed: ${feeError.message}`);
@@ -2149,12 +2473,14 @@ function AdminClients({ clients, refetchClients, entries }) {
         window.alert(`Couldn't update client: ${error.message}`);
         return;
       }
-      const prevFee = { fixedFee: modal.fixedFee ?? null, allocation: modal.allocation || { accounting: 0, tax: 0, payroll: 0, other: 0 } };
-      const changed = JSON.stringify(prevFee) !== JSON.stringify({ fixedFee: fee, allocation });
+      const prevSplit = Object.fromEntries(COST_CENTERS.map((cc) => [cc, (modal.feeSplit && modal.feeSplit[cc]) || 0]));
+      const prevFee = { fixedFee: modal.fixedFee ?? null, allocation: modal.allocation || { accounting: 0, tax: 0, payroll: 0, other: 0 }, feeSplit: prevSplit, feeSplitNote: modal.feeSplitNote || "" };
+      const changed = JSON.stringify(prevFee) !== JSON.stringify({ fixedFee: fee, allocation, feeSplit: split, feeSplitNote: splitNote });
       if (changed) {
         const { error: feeError } = await supabase.from("client_fee_history").insert({
           client_id: modal.id, effective_date: feeEffectiveDate || toKey(TODAY), fixed_fee: fee,
           alloc_accounting: allocation.accounting, alloc_tax: allocation.tax, alloc_payroll: allocation.payroll, alloc_other: allocation.other,
+          ...feeSplitRow(split, splitNote),
         });
         if (feeError) {
           window.alert(`Client was updated, but saving the new fee terms failed: ${feeError.message}`);
@@ -2185,20 +2511,35 @@ function AdminClients({ clients, refetchClients, entries }) {
   function startEditHistory(h) {
     setEditingHistoryId(h.id);
     const a = h.allocation || {};
+    const sp = h.feeSplit || {};
     setHistForm({
       effectiveDate: h.effectiveDate, fixedFee: h.fixedFee ?? "",
       accounting: a.accounting ?? "", tax: a.tax ?? "", payroll: a.payroll ?? "", other: a.other ?? "",
+      split: Object.fromEntries(COST_CENTERS.map((cc) => [cc, sp[cc] ? String(sp[cc]) : ""])),
+      splitNote: h.feeSplitNote || "",
     });
   }
   function cancelEditHistory() { setEditingHistoryId(null); setHistForm(null); }
   async function saveHistoryEdit() {
+    const fee = histForm.fixedFee === "" ? null : Number(histForm.fixedFee);
+    const split = Object.fromEntries(COST_CENTERS.map((cc) => [cc, Number(histForm.split?.[cc]) || 0]));
+    const total = feeSplitTotal(split);
+    if (fee && total > 0 && Math.abs(total - fee) > 0.01) {
+      window.alert(`The cost-center split adds up to ${fmtEur(total)}, but the fixed fee is ${fmtEur(fee)}. Adjust the split so it matches.`);
+      return;
+    }
+    if (split.other > 0 && !(histForm.splitNote || "").trim()) {
+      window.alert('Please add a note explaining what the "Other" part of the fee covers.');
+      return;
+    }
     await supabase.from("client_fee_history").update({
       effective_date: histForm.effectiveDate,
-      fixed_fee: histForm.fixedFee === "" ? null : Number(histForm.fixedFee),
+      fixed_fee: fee,
       alloc_accounting: Number(histForm.accounting) || 0,
       alloc_tax: Number(histForm.tax) || 0,
       alloc_payroll: Number(histForm.payroll) || 0,
       alloc_other: Number(histForm.other) || 0,
+      ...feeSplitRow(split, split.other > 0 ? histForm.splitNote.trim() : ""),
     }).eq("id", editingHistoryId);
     await refetchClients();
     cancelEditHistory();
@@ -2214,10 +2555,15 @@ function AdminClients({ clients, refetchClients, entries }) {
     setExtraFeeMonth(defaultMonth);
     setExtraFeeAmount("");
     setExtraFeeNote("");
+    setExtraFeeCostCenter("accounting");
   }
   async function saveExtraFee() {
     if (!extraFeeMonth || !extraFeeAmount || Number(extraFeeAmount) <= 0) return;
-    await supabase.from("client_extra_fees").insert({ client_id: extraFeeClientId, month: extraFeeMonth, amount: Number(extraFeeAmount), note: extraFeeNote.trim() || null });
+    if (extraFeeCostCenter === "other" && !extraFeeNote.trim()) {
+      window.alert('A note is required when the cost center is "Other" — say what this fee is for.');
+      return;
+    }
+    await supabase.from("client_extra_fees").insert({ client_id: extraFeeClientId, month: extraFeeMonth, amount: Number(extraFeeAmount), note: extraFeeNote.trim() || null, cost_center: extraFeeCostCenter });
     await refetchClients();
     setExtraFeeClientId(null);
   }
@@ -2243,6 +2589,8 @@ function AdminClients({ clients, refetchClients, entries }) {
                 "Fixed fee (€/mo)": c.fixedFee ?? "", "Accounting alloc. (h)": c.allocation?.accounting || 0,
                 "Tax alloc. (h)": c.allocation?.tax || 0, "Payroll alloc. (h)": c.allocation?.payroll || 0,
                 "Other alloc. (h)": c.allocation?.other || 0,
+                ...Object.fromEntries(COST_CENTERS.map((cc) => [`Fee → ${COST_CENTER_LABELS[cc]} (€)`, c.feeSplit?.[cc] || 0])),
+                "Fee → Other note": c.feeSplitNote || "",
               })),
             }])}>Export to Excel</Btn>
             <Btn icon={Plus} onClick={openNew}>Add client</Btn>
@@ -2276,7 +2624,10 @@ function AdminClients({ clients, refetchClients, entries }) {
                 <Td mono>{hrs.toFixed(2)}h</Td>
                 <Td mono>{fmtEur(revenue)}</Td>
                 <Td mono title={allocTitle}>{allocation ? allocation.toFixed(1) + "h" : "—"}</Td>
-                <Td mono>{feeThen.fixedFee ? fmtEur(feeThen.fixedFee) + "/mo" : "—"}</Td>
+                <Td mono title={feeThen.fixedFee ? (feeSplitTotal(feeThen.feeSplit) > 0 ? COST_CENTERS.filter((cc) => feeThen.feeSplit[cc]).map((cc) => `${COST_CENTER_LABELS[cc]} ${fmtEur(feeThen.feeSplit[cc])}`).join(" · ") : "No cost-center split yet") : undefined}>
+                  {feeThen.fixedFee ? fmtEur(feeThen.fixedFee) + "/mo" : "—"}
+                  {feeThen.fixedFee && feeSplitTotal(feeThen.feeSplit) <= 0 ? <span title="Fixed fee has no cost-center split yet" style={{ marginLeft: 6, color: C.warn }}>●</span> : null}
+                </Td>
                 <Td mono>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span>{extraThisPeriod > 0 ? fmtEur(extraThisPeriod) : "—"}</span>
@@ -2357,6 +2708,37 @@ function AdminClients({ clients, refetchClients, entries }) {
               <input type="number" min="0" style={inputStyle} value={fixedFee}
                 onChange={(e) => setFixedFee(e.target.value)} placeholder="e.g. 1200" />
             </Field>
+            {(() => {
+              const fee = fixedFee === "" ? 0 : Number(fixedFee) || 0;
+              const total = feeSplitTotal(feeSplit);
+              const remaining = fee - total;
+              const tone = total === 0 ? C.inkFaint : Math.abs(remaining) <= 0.01 ? C.accent : C.danger;
+              return (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                    <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink }}>Fixed fee split by cost center (€ per month)</div>
+                    <div style={{ fontFamily: mono, fontSize: 11.5, color: tone }}>
+                      {total === 0 ? "No split yet" : Math.abs(remaining) <= 0.01 ? "Matches fee ✓" : remaining > 0 ? `${fmtEur(remaining)} left to allocate` : `${fmtEur(-remaining)} over the fee`}
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                    {COST_CENTERS.map((cc) => (
+                      <Field key={cc} label={COST_CENTER_LABELS[cc]}>
+                        <input type="number" min="0" style={inputStyle} value={feeSplit[cc]}
+                          onChange={(e) => setFeeSplit((f) => ({ ...f, [cc]: e.target.value }))} placeholder="0" />
+                      </Field>
+                    ))}
+                  </div>
+                  {Number(feeSplit.other) > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <Field label='Note — what does the "Other" part cover? (required)'>
+                        <input style={inputStyle} value={feeSplitNote} onChange={(e) => setFeeSplitNote(e.target.value)} placeholder="e.g. Company secretarial work" />
+                      </Field>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <Field label="Effective from">
               <input type="date" style={inputStyle} value={feeEffectiveDate} onChange={(e) => setFeeEffectiveDate(e.target.value)} />
             </Field>
@@ -2365,10 +2747,10 @@ function AdminClients({ clients, refetchClients, entries }) {
             </Field>
             <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, lineHeight: 1.5 }}>
               Revenue is the fixed fee (this recurring rate) plus any extra fees added below for
-              specific months. The category allocation is for tracking workload only (allocated
-              vs. actual), set per client on the Employees' timesheets. Saving with different
-              numbers above adds a new row below, effective from that date — it never overwrites
-              past periods.
+              specific months. The cost-center split says how the fixed fee is reported on the
+              dashboard (the split must add up to the fee); the hours allocation is for tracking
+              workload only (allocated vs. actual). Saving with different numbers above adds a new
+              row below, effective from that date — it never overwrites past periods.
             </div>
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -2382,7 +2764,7 @@ function AdminClients({ clients, refetchClients, entries }) {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 12 }}>
                     <thead>
                       <tr>
-                        {["Month", "Amount", "Note", ""].map((h) => (
+                        {["Month", "Amount", "Cost center", "Note", ""].map((h) => (
                           <th key={h} style={{ textAlign: "left", padding: "3px 6px", fontSize: 10.5, fontWeight: 600, color: C.inkFaint, borderBottom: `1px solid ${C.border}` }}>{h}</th>
                         ))}
                       </tr>
@@ -2392,6 +2774,7 @@ function AdminClients({ clients, refetchClients, entries }) {
                         <tr key={x.id}>
                           <td style={{ padding: "3px 6px", fontFamily: mono, color: C.ink }}>{x.month}</td>
                           <td style={{ padding: "3px 6px", fontFamily: mono, color: C.ink }}>{fmtEur(x.amount)}</td>
+                          <td style={{ padding: "3px 6px", color: C.ink }}>{costCenterLabel(x.costCenter)}</td>
                           <td style={{ padding: "3px 6px", color: C.ink }}>{x.note || "—"}</td>
                           <td style={{ padding: "3px 6px" }}>
                             <button onClick={() => deleteExtraFee(x.id)} style={iconBtnStyle}><Trash2 size={12} color={C.inkMuted} /></button>
@@ -2412,7 +2795,7 @@ function AdminClients({ clients, refetchClients, entries }) {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 12 }}>
                     <thead>
                       <tr>
-                        {["From", "To", "Alloc. total", "Fixed fee", ""].map((h) => (
+                        {["From", "To", "Alloc. total", "Fixed fee", "Split", ""].map((h) => (
                           <th key={h} style={{ textAlign: "left", padding: "3px 6px", fontSize: 10.5, fontWeight: 600, color: C.inkFaint, borderBottom: `1px solid ${C.border}` }}>{h}</th>
                         ))}
                       </tr>
@@ -2422,10 +2805,13 @@ function AdminClients({ clients, refetchClients, entries }) {
                         const a = h.allocation || {};
                         const allocTotal = CATEGORIES.reduce((s, c) => s + (a[c] || 0), 0);
                         const allocTitle = CATEGORIES.map((cat) => `${CATEGORY_LABELS[cat]} ${a[cat] || 0}h`).join(" · ");
+                        const sp = h.feeSplit || {};
+                        const spTotal = feeSplitTotal(sp);
+                        const spTitle = COST_CENTERS.filter((cc) => sp[cc]).map((cc) => `${COST_CENTER_LABELS[cc]} ${fmtEur(sp[cc])}`).join(" · ") + (h.feeSplitNote ? ` — ${h.feeSplitNote}` : "");
                         const isEditing = editingHistoryId === h.id;
                         return isEditing ? (
                           <tr key={h.id}>
-                            <td colSpan={5} style={{ padding: "6px" }}>
+                            <td colSpan={6} style={{ padding: "6px" }}>
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                                 <input type="date" style={{ ...inputStyle, width: 130, padding: "4px 6px" }} value={histForm.effectiveDate} onChange={(ev) => setHistForm((f) => ({ ...f, effectiveDate: ev.target.value }))} />
                                 <input type="number" style={{ ...inputStyle, width: 65, padding: "4px 6px" }} value={histForm.accounting} onChange={(ev) => setHistForm((f) => ({ ...f, accounting: ev.target.value }))} placeholder="Acct h" />
@@ -2433,6 +2819,16 @@ function AdminClients({ clients, refetchClients, entries }) {
                                 <input type="number" style={{ ...inputStyle, width: 65, padding: "4px 6px" }} value={histForm.payroll} onChange={(ev) => setHistForm((f) => ({ ...f, payroll: ev.target.value }))} placeholder="Payroll h" />
                                 <input type="number" style={{ ...inputStyle, width: 65, padding: "4px 6px" }} value={histForm.other} onChange={(ev) => setHistForm((f) => ({ ...f, other: ev.target.value }))} placeholder="Other h" />
                                 <input type="number" style={{ ...inputStyle, width: 80, padding: "4px 6px" }} value={histForm.fixedFee} onChange={(ev) => setHistForm((f) => ({ ...f, fixedFee: ev.target.value }))} placeholder="Fixed fee" />
+                              </div>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
+                                <span style={{ fontFamily: sans, fontSize: 11, color: C.inkFaint, width: 130 }}>Fee split (€):</span>
+                                {COST_CENTERS.map((cc) => (
+                                  <input key={cc} type="number" style={{ ...inputStyle, width: 65, padding: "4px 6px" }} value={histForm.split?.[cc] ?? ""}
+                                    onChange={(ev) => setHistForm((f) => ({ ...f, split: { ...(f.split || {}), [cc]: ev.target.value } }))} placeholder={COST_CENTER_LABELS[cc]} title={COST_CENTER_LABELS[cc]} />
+                                ))}
+                                {Number(histForm.split?.other) > 0 && (
+                                  <input style={{ ...inputStyle, width: 160, padding: "4px 6px" }} value={histForm.splitNote || ""} onChange={(ev) => setHistForm((f) => ({ ...f, splitNote: ev.target.value }))} placeholder="Other — note (required)" />
+                                )}
                                 <button onClick={() => saveHistoryEdit()} style={iconBtnStyle}><Check size={14} color={C.accent} /></button>
                                 <button onClick={cancelEditHistory} style={iconBtnStyle}><X size={14} color={C.inkMuted} /></button>
                               </div>
@@ -2444,6 +2840,9 @@ function AdminClients({ clients, refetchClients, entries }) {
                             <td style={{ padding: "3px 6px", fontFamily: mono, color: C.ink }}>{h.to}</td>
                             <td style={{ padding: "3px 6px", fontFamily: mono, color: C.ink }} title={allocTitle}>{allocTotal > 0 ? allocTotal + "h" : "—"}</td>
                             <td style={{ padding: "3px 6px", fontFamily: mono, color: C.ink }}>{h.fixedFee ? fmtEur(h.fixedFee) : "—"}</td>
+                            <td style={{ padding: "3px 6px", fontFamily: sans, color: spTotal > 0 ? C.ink : C.warn, fontSize: 11 }} title={spTitle || undefined}>
+                              {spTotal > 0 ? COST_CENTERS.filter((cc) => sp[cc]).map((cc) => COST_CENTER_LABELS[cc].slice(0, 3)).join("/") : (h.fixedFee ? "Not split" : "—")}
+                            </td>
                             <td style={{ padding: "3px 6px" }}>
                               <div style={{ display: "flex", gap: 4 }}>
                                 <button onClick={() => startEditHistory(h)} style={iconBtnStyle}><Pencil size={12} color={C.inkMuted} /></button>
@@ -2475,7 +2874,12 @@ function AdminClients({ clients, refetchClients, entries }) {
             <Field label="Amount">
               <input type="number" min="0" style={inputStyle} value={extraFeeAmount} onChange={(e) => setExtraFeeAmount(e.target.value)} placeholder="e.g. 150" autoFocus />
             </Field>
-            <Field label="Note (optional)">
+            <Field label="Cost center">
+              <select style={inputStyle} value={extraFeeCostCenter} onChange={(e) => setExtraFeeCostCenter(e.target.value)}>
+                {COST_CENTERS.map((cc) => <option key={cc} value={cc}>{COST_CENTER_LABELS[cc]}</option>)}
+              </select>
+            </Field>
+            <Field label={extraFeeCostCenter === "other" ? "Note (required for Other)" : "Note (optional)"}>
               <input style={inputStyle} value={extraFeeNote} onChange={(e) => setExtraFeeNote(e.target.value)} placeholder="e.g. Extra VAT filing" />
             </Field>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
@@ -2501,6 +2905,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
   const [role, setRole] = useState("employee");
   const [weeklyHours, setWeeklyHours] = useState("40");
   const [annualLeaveDays, setAnnualLeaveDays] = useState("25");
+  const [department, setDepartment] = useState(DEFAULT_DEPARTMENT);
   const [grossSalary, setGrossSalary] = useState("");
   const [socialSecurity, setSocialSecurity] = useState("");
   const [ticketRestaurant, setTicketRestaurant] = useState("");
@@ -2524,6 +2929,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
   function openEdit(e) {
     setModal(e); setName(e.name); setTitle(e.title || ""); setRole(e.role);
     setWeeklyHours(String(e.weeklyHours || 40)); setAnnualLeaveDays(String(e.annualLeaveDays || 25));
+    setDepartment(e.department || DEFAULT_DEPARTMENT);
     resetCostFields(e);
   }
 
@@ -2538,10 +2944,15 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
       insurance: Number(insurance) || 0,
       otherCost: Number(otherCost) || 0,
     };
-    await supabase.from("profiles").update({
+    const { error: profileError } = await supabase.from("profiles").update({
       name: name.trim(), title: title.trim() || null, role,
       weekly_hours: hrs, annual_leave_days: leaveDays,
+      department,
     }).eq("id", modal.id);
+    if (profileError) {
+      window.alert(`Couldn't update employee: ${profileError.message}`);
+      return;
+    }
 
     const prevCost = { grossSalary: modal.grossSalary || 0, socialSecurity: modal.socialSecurity || 0, ticketRestaurant: modal.ticketRestaurant || 0, insurance: modal.insurance || 0, otherCost: modal.otherCost || 0 };
     const changed = JSON.stringify(prevCost) !== JSON.stringify(costFields);
@@ -2611,6 +3022,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
               "Contracted h/wk": e.weeklyHours || 40, "Annual leave (d/yr)": e.annualLeaveDays || 25,
               "Gross salary": e.grossSalary || 0, "Social security": e.socialSecurity || 0,
               "Ticket restaurant": e.ticketRestaurant || 0, "Other insurance": e.insurance || 0, "Other cost": e.otherCost || 0,
+              Department: departmentLabel(e.department || DEFAULT_DEPARTMENT),
             })),
           }])}>Export to Excel</Btn>
         } />
@@ -2621,7 +3033,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
         <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
       </Panel>
       <Panel>
-        <TableShell headers={["Name", "Title", "Email", "Role", "Contracted /wk", "Leave/yr", "Hours", "Cost /mo", "Cost /h", "Status", ""]}>
+        <TableShell headers={["Name", "Title", "Email", "Role", "Department", "Contracted /wk", "Leave/yr", "Hours", "Cost /mo", "Cost /h", "Status", ""]}>
           {employees.map((e) => {
             const hrs = periodEntries.filter((t) => t.employeeId === e.id).reduce((s, t) => s + t.hours, 0);
             const costThenMonthly = monthlyLaborCostAsOf(e, toKey(viewRangeStart));
@@ -2632,6 +3044,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
                 <Td>{e.title || "—"}</Td>
                 <Td>{e.email}</Td>
                 <Td><Badge tone={e.role === "admin" ? "accent" : "neutral"}>{e.role === "admin" ? "Manager" : "Employee"}</Badge></Td>
+                <Td>{departmentLabel(e.department || DEFAULT_DEPARTMENT)}</Td>
                 <Td mono>{e.weeklyHours || 40}h</Td>
                 <Td mono>{e.annualLeaveDays || 25}d</Td>
                 <Td mono>{hrs.toFixed(2) + "h"}</Td>
@@ -2674,6 +3087,14 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
                 <option value="admin">Manager / Admin</option>
               </select>
             </Field>
+            <Field label="Department — where this person's labor cost is reported">
+              <select style={inputStyle} value={department} onChange={(e) => setDepartment(e.target.value)}>
+                {DEPARTMENTS.map((d) => <option key={d.key} value={d.key}>{d.label} ({d.costCenters.map((cc) => COST_CENTER_LABELS[cc]).join(" / ")})</option>)}
+              </select>
+            </Field>
+            <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, lineHeight: 1.5, marginTop: -4 }}>
+              Accounting Team cost is spread across Accounting / Tax / Payroll / Other by the hours logged each period. Management Team cost is split between Director and Finance in proportion to that period's Director/Finance fees. Rental goes entirely to the Rental cost center.
+            </div>
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, marginTop: 2 }}>
               <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 10 }}>Record a new labor cost change</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -2769,6 +3190,241 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
 
 
 /* ---------------------------------------------------------------------- */
+/* Admin: Rental — properties and their expenses                            */
+/* ---------------------------------------------------------------------- */
+
+function AdminRental({ properties, expenses, refetchRental }) {
+  const [viewPeriod, setViewPeriod] = useState("month");
+  const [viewAnchor, setViewAnchor] = useState(TODAY);
+  const [propModal, setPropModal] = useState(null); // null | "new" | property
+  const [propName, setPropName] = useState("");
+  const [propAddress, setPropAddress] = useState("");
+  const [propNote, setPropNote] = useState("");
+  const [expModal, setExpModal] = useState(false);
+  const [expPropertyId, setExpPropertyId] = useState("");
+  const [expMonth, setExpMonth] = useState(toKey(TODAY).slice(0, 7));
+  const [expCategory, setExpCategory] = useState("rent");
+  const [expAmount, setExpAmount] = useState("");
+  const [expNote, setExpNote] = useState("");
+  const [propFilter, setPropFilter] = useState("all");
+
+  const [rangeStart, rangeEnd] = periodRange(viewPeriod, viewAnchor);
+  const accrued = rentalExpensesForRange(expenses, rangeStart, rangeEnd);
+  const propName_ = (id) => properties.find((p) => p.id === id)?.name || "—";
+
+  // Entries whose booked month overlaps the period (for the detail list).
+  const monthsInRange = [];
+  for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) monthsInRange.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}`);
+  const periodEntries = expenses
+    .filter((x) => monthsInRange.includes(x.month))
+    .filter((x) => propFilter === "all" || x.propertyId === propFilter)
+    .sort((a, b) => b.month.localeCompare(a.month) || propName_(a.propertyId).localeCompare(propName_(b.propertyId)));
+
+  function openNewProperty() { setPropModal("new"); setPropName(""); setPropAddress(""); setPropNote(""); }
+  function openEditProperty(p) { setPropModal(p); setPropName(p.name); setPropAddress(p.address || ""); setPropNote(p.note || ""); }
+  async function saveProperty() {
+    if (!propName.trim()) return;
+    const row = { name: propName.trim(), address: propAddress.trim() || null, note: propNote.trim() || null };
+    const { error } = propModal === "new"
+      ? await supabase.from("rental_properties").insert(row)
+      : await supabase.from("rental_properties").update(row).eq("id", propModal.id);
+    if (error) { window.alert(`Couldn't save property: ${error.message}`); return; }
+    await refetchRental();
+    setPropModal(null);
+  }
+  async function togglePropertyActive(p) {
+    await supabase.from("rental_properties").update({ active: !p.active }).eq("id", p.id);
+    refetchRental();
+  }
+  async function deleteProperty(p) {
+    if (!window.confirm(`Permanently delete "${p.name}"? This cannot be undone.`)) return;
+    const { error } = await supabase.from("rental_properties").delete().eq("id", p.id);
+    if (error) {
+      if (error.code === "23503") window.alert(`Can't delete "${p.name}" — it still has expenses booked. Delete those first, or deactivate the property instead.`);
+      else window.alert(`Couldn't delete "${p.name}": ${error.message}`);
+      return;
+    }
+    refetchRental();
+  }
+
+  function openNewExpense(propertyId) {
+    setExpPropertyId(propertyId || properties.find((p) => p.active)?.id || "");
+    setExpMonth(`${rangeStart.getFullYear()}-${pad(rangeStart.getMonth() + 1)}`);
+    setExpCategory("rent"); setExpAmount(""); setExpNote("");
+    setExpModal(true);
+  }
+  async function saveExpense() {
+    if (!expPropertyId) { window.alert("Choose a property first."); return; }
+    if (!expMonth || !expAmount || Number(expAmount) <= 0) { window.alert("Enter the month and an amount greater than zero."); return; }
+    const { error } = await supabase.from("rental_expenses").insert({
+      property_id: expPropertyId, month: expMonth, category: expCategory, amount: Number(expAmount), note: expNote.trim() || null,
+    });
+    if (error) { window.alert(`Couldn't save expense: ${error.message}`); return; }
+    await refetchRental();
+    setExpModal(false);
+  }
+  async function deleteExpense(id) {
+    await supabase.from("rental_expenses").delete().eq("id", id);
+    refetchRental();
+  }
+
+  function exportRental() {
+    exportToExcel(`rental-expenses-${toKey(TODAY)}.xlsx`, [
+      { name: "By property", rows: properties.map((p) => {
+        const x = accrued.byProperty[p.id] || {};
+        return { Property: p.name, Address: p.address || "", Status: p.active ? "Active" : "Inactive",
+          ...Object.fromEntries(RENTAL_EXPENSE_CATEGORIES.map((k) => [`${RENTAL_EXPENSE_LABELS[k]} (€)`, Number((x[k] || 0).toFixed(2))])),
+          "Total (€)": Number((x.total || 0).toFixed(2)) };
+      }) },
+      { name: "Entries", rows: periodEntries.map((x) => ({
+        Month: x.month, Property: propName_(x.propertyId), Category: RENTAL_EXPENSE_LABELS[x.category] || x.category, "Amount (€)": x.amount, Note: x.note,
+      })) },
+    ]);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Rental" sub="Rental properties and their expenses — rent, utilities and common expenses, booked per property and month."
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="secondary" onClick={exportRental}>Export to Excel</Btn>
+            <Btn variant="secondary" icon={Plus} onClick={openNewProperty}>Add property</Btn>
+            <Btn icon={Plus} onClick={() => openNewExpense()} disabled={properties.length === 0}>Add expense</Btn>
+          </div>
+        } />
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>
+          Amounts below are accrued to this reporting period (a monthly booking is spread evenly over that month's days, so weekly and quarterly views reconcile with the dashboard).
+        </div>
+        <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
+      </Panel>
+
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        {RENTAL_EXPENSE_CATEGORIES.map((k) => (
+          <StatCard key={k} label={RENTAL_EXPENSE_LABELS[k]} value={fmtEur(accrued.byCategory[k])} sub="This period" />
+        ))}
+        <StatCard label="Total rental expenses" value={fmtEur(accrued.total)} accent={C.accent} sub="Goes to the Rental cost center" />
+      </div>
+
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 12 }}>Expenses by property</div>
+        {properties.length === 0 ? (
+          <EmptyState icon={Home} title="No rental properties yet" sub="Add a property to start booking its expenses." />
+        ) : (
+          <TableShell headers={["Property", "Address", ...RENTAL_EXPENSE_CATEGORIES.map((k) => RENTAL_EXPENSE_LABELS[k]), "Total", "Status", ""]}>
+            {properties.map((p) => {
+              const x = accrued.byProperty[p.id] || {};
+              return (
+                <tr key={p.id} style={{ opacity: p.active ? 1 : 0.55 }}>
+                  <Td title={p.note || undefined}>{p.name}</Td>
+                  <Td style={{ color: C.inkMuted }}>{p.address || "—"}</Td>
+                  {RENTAL_EXPENSE_CATEGORIES.map((k) => <Td key={k} mono>{x[k] > 0 ? fmtEur(x[k]) : "—"}</Td>)}
+                  <Td mono style={{ fontWeight: 700 }}>{x.total > 0 ? fmtEur(x.total) : "—"}</Td>
+                  <Td>{p.active ? <Badge tone="accent">Active</Badge> : <Badge tone="neutral">Inactive</Badge>}</Td>
+                  <Td right>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <Btn size="sm" variant="ghost" icon={Plus} onClick={() => openNewExpense(p.id)}>Expense</Btn>
+                      <Btn size="sm" variant="ghost" icon={Pencil} onClick={() => openEditProperty(p)}>Edit</Btn>
+                      <Btn size="sm" variant={p.active ? "danger" : "secondary"} onClick={() => togglePropertyActive(p)}>{p.active ? "Deactivate" : "Reactivate"}</Btn>
+                      <Btn size="sm" variant="ghost" icon={Trash2} onClick={() => deleteProperty(p)}>Delete</Btn>
+                    </div>
+                  </Td>
+                </tr>
+              );
+            })}
+            <tr style={{ fontWeight: 700 }}>
+              <Td>Total</Td>
+              <Td />
+              {RENTAL_EXPENSE_CATEGORIES.map((k) => <Td key={k} mono>{fmtEur(accrued.byCategory[k])}</Td>)}
+              <Td mono>{fmtEur(accrued.total)}</Td>
+              <Td /><Td />
+            </tr>
+          </TableShell>
+        )}
+      </Panel>
+
+      <Panel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Booked entries in this period</div>
+          <select style={{ ...inputStyle, width: 220 }} value={propFilter} onChange={(e) => setPropFilter(e.target.value)}>
+            <option value="all">All properties</option>
+            {properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        {periodEntries.length === 0 ? (
+          <EmptyState icon={Euro} title="No expenses booked for these months" />
+        ) : (
+          <TableShell headers={["Month", "Property", "Category", "Amount", "Note", ""]}>
+            {periodEntries.map((x) => (
+              <tr key={x.id}>
+                <Td mono>{x.month}</Td>
+                <Td>{propName_(x.propertyId)}</Td>
+                <Td>{RENTAL_EXPENSE_LABELS[x.category] || x.category}</Td>
+                <Td mono>{fmtEur(x.amount)}</Td>
+                <Td style={{ color: C.inkMuted }}>{x.note || "—"}</Td>
+                <Td right><button onClick={() => deleteExpense(x.id)} style={iconBtnStyle} title="Delete"><Trash2 size={13} color={C.inkMuted} /></button></Td>
+              </tr>
+            ))}
+          </TableShell>
+        )}
+      </Panel>
+
+      {propModal && (
+        <Modal title={propModal === "new" ? "Add rental property" : "Edit rental property"} onClose={() => setPropModal(null)} width={440}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Property name">
+              <input style={inputStyle} value={propName} onChange={(e) => setPropName(e.target.value)} placeholder="e.g. Kaniggos 2 — 3rd floor" autoFocus />
+            </Field>
+            <Field label="Address (optional)">
+              <input style={inputStyle} value={propAddress} onChange={(e) => setPropAddress(e.target.value)} placeholder="Street, number, city" />
+            </Field>
+            <Field label="Note (optional)">
+              <input style={inputStyle} value={propNote} onChange={(e) => setPropNote(e.target.value)} placeholder="e.g. Tenant, lease dates" />
+            </Field>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+              <Btn variant="secondary" onClick={() => setPropModal(null)}>Cancel</Btn>
+              <Btn onClick={saveProperty}>Save property</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {expModal && (
+        <Modal title="Add rental expense" onClose={() => setExpModal(false)} width={400}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Property">
+              <select style={inputStyle} value={expPropertyId} onChange={(e) => setExpPropertyId(e.target.value)}>
+                <option value="">— choose —</option>
+                {properties.filter((p) => p.active || p.id === expPropertyId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Month">
+              <input type="month" style={inputStyle} value={expMonth} onChange={(e) => setExpMonth(e.target.value)} />
+            </Field>
+            <Field label="Category">
+              <select style={inputStyle} value={expCategory} onChange={(e) => setExpCategory(e.target.value)}>
+                {RENTAL_EXPENSE_CATEGORIES.map((k) => <option key={k} value={k}>{RENTAL_EXPENSE_LABELS[k]}</option>)}
+              </select>
+            </Field>
+            <Field label="Amount (€)">
+              <input type="number" min="0" style={inputStyle} value={expAmount} onChange={(e) => setExpAmount(e.target.value)} placeholder="e.g. 850" autoFocus />
+            </Field>
+            <Field label="Note (optional)">
+              <input style={inputStyle} value={expNote} onChange={(e) => setExpNote(e.target.value)} placeholder="e.g. DEH electricity bill" />
+            </Field>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+              <Btn variant="secondary" onClick={() => setExpModal(false)}>Cancel</Btn>
+              <Btn onClick={saveExpense}>Add expense</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+
+/* ---------------------------------------------------------------------- */
 /* Root                                                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -2795,6 +3451,9 @@ export default function App() {
   const [entries, refetchEntries, entriesLoading] = useTable("time_entries", mapEntry);
   const [lockedWeeks, refetchLockedWeeks, lockedLoading] = useTable("locked_weeks", mapLockedWeek);
   const [leaveRequests, refetchLeaveRequests, leaveLoading] = useTable("leave_requests", mapLeaveRequest);
+  const [rentalProperties, refetchRentalPropertiesRaw, rentalPropsLoading] = useTable("rental_properties", mapRentalProperty, "name");
+  const [rentalExpenses, refetchRentalExpensesRaw, rentalExpLoading] = useTable("rental_expenses", mapRentalExpense);
+  const refetchRental = useCallback(async () => { await Promise.all([refetchRentalPropertiesRaw(), refetchRentalExpensesRaw()]); }, [refetchRentalPropertiesRaw, refetchRentalExpensesRaw]);
 
   const refetchEmployees = useCallback(async () => { await Promise.all([refetchProfilesRaw(), refetchCostHistoryRaw()]); }, [refetchProfilesRaw, refetchCostHistoryRaw]);
   const refetchClients = useCallback(async () => { await Promise.all([refetchClientsRaw(), refetchFeeHistoryRaw(), refetchExtraFeesRaw()]); }, [refetchClientsRaw, refetchFeeHistoryRaw, refetchExtraFeesRaw]);
@@ -2812,8 +3471,8 @@ export default function App() {
   const clients = React.useMemo(() => {
     return clientRows.map((c) => {
       const history = feeHistoryRows.filter((h) => h.clientId === c.id);
-      const latest = latestFromHistory(history, ["fixedFee", "allocation"])
-        || { fixedFee: c.fixedFee, allocation: { accounting: 0, tax: 0, payroll: 0, other: 0 } };
+      const latest = latestFromHistory(history, ["fixedFee", "allocation", "feeSplit", "feeSplitNote"])
+        || { fixedFee: c.fixedFee, allocation: { accounting: 0, tax: 0, payroll: 0, other: 0 }, feeSplit: emptyFeeSplit(), feeSplitNote: "" };
       const extraFeeEntries = extraFeeRows.filter((x) => x.clientId === c.id);
       return { ...c, ...latest, feeHistory: history, extraFeeEntries };
     });
@@ -2840,7 +3499,7 @@ export default function App() {
   if (!session) return <AuthScreen />;
   if (profilesLoading || !user) return <LoadingScreen text="Setting up your account…" />;
   if (!user.active) return <LoadingScreen text="This account has been deactivated. Contact your manager." />;
-  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || view === null) return <LoadingScreen />;
+  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || view === null) return <LoadingScreen />;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: C.bg, fontFamily: sans }}>
@@ -2860,7 +3519,7 @@ export default function App() {
           <TeamCalendar employees={employees} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "dashboard" && (
-          <AdminDashboard employees={employees} clients={clients} entries={entries} />
+          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} />
         )}
         {user.role === "admin" && view === "timesheets" && (
           <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} />
@@ -2871,7 +3530,11 @@ export default function App() {
         {user.role === "admin" && view === "employees" && (
           <AdminEmployees employees={employees} refetchEmployees={refetchEmployees} entries={entries} />
         )}
+        {user.role === "admin" && view === "rental" && (
+          <AdminRental properties={rentalProperties} expenses={rentalExpenses} refetchRental={refetchRental} />
+        )}
       </div>
     </div>
   );
 }
+
