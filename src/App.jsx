@@ -78,6 +78,15 @@ const departmentOf = (cc) => DEPARTMENTS.find((d) => d.costCenters.includes(cc))
 // They are non-labor cost of the Rental department / Rental cost center.
 const RENTAL_EXPENSE_CATEGORIES = ["rent", "utilities", "common_expenses"];
 const RENTAL_EXPENSE_LABELS = { rent: "Rental", utilities: "Utilities", common_expenses: "Common expenses" };
+// An expense is either recurring (a monthly amount from one month to another,
+// or open-ended) or extra (a one-off amount booked to a single month).
+const RENTAL_EXPENSE_KINDS = { recurring: "Recurring (from – to)", extra: "Extra (one month)" };
+const monthKeyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+const fmtMonthKey = (k) => k ? fromKey(k + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+// Does a rental expense apply to a given 'YYYY-MM'?
+const rentalExpenseAppliesTo = (x, monthKey) => x.kind === "recurring"
+  ? (!!x.fromMonth && x.fromMonth <= monthKey && (!x.toMonth || monthKey <= x.toMonth))
+  : x.month === monthKey;
 const UNALLOCATED = "unallocated"; // fixed fees with no split yet, or cost of employees with no hours and no fixed cost center
 const DEFAULT_DEPARTMENT = "accounting_team";
 const departmentLabel = (key) => DEPARTMENTS.find((d) => d.key === key)?.label || key;
@@ -373,8 +382,10 @@ function employeeCostByCostCenter(employee, cost, empPeriodEntries, deptRevenueB
   return byCC;
 }
 
-// Rental expenses that fall within a date range, accrued day by day (each
-// entry is spread evenly over the days of the month it was booked for) —
+// Rental expenses that fall within a date range, accrued day by day (a
+// recurring entry counts its monthly amount in every month from–to, an
+// extra entry only in its own month; each month's amount is spread evenly
+// over that month's days) —
 // the same period-agnostic rule used for extra fees, so weekly, monthly,
 // quarterly and annual views all reconcile.
 function rentalExpensesForRange(expenses, rangeStart, rangeEnd) {
@@ -383,9 +394,9 @@ function rentalExpensesForRange(expenses, rangeStart, rangeEnd) {
   let total = 0;
   let d = new Date(rangeStart);
   while (d <= rangeEnd) {
-    const monthKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    const monthKey = monthKeyOf(d);
     const daysInThisMonth = endOfMonth(d).getDate();
-    (expenses || []).filter((x) => x.month === monthKey).forEach((x) => {
+    (expenses || []).filter((x) => rentalExpenseAppliesTo(x, monthKey)).forEach((x) => {
       const amt = (Number(x.amount) || 0) / daysInThisMonth;
       const cat = RENTAL_EXPENSE_CATEGORIES.includes(x.category) ? x.category : "rent";
       byCategory[cat] += amt;
@@ -1059,7 +1070,7 @@ const mapExtraFee = (r) => ({ id: r.id, clientId: r.client_id, month: r.month, a
 const mapEntry = (r) => ({ id: r.id, employeeId: r.employee_id, clientId: r.client_id, date: r.entry_date, hours: Number(r.hours), category: r.category, note: r.note || "" });
 const mapLockedWeek = (r) => `${r.employee_id}|${r.week_start}`;
 const mapRentalProperty = (r) => ({ id: r.id, name: r.name, address: r.address || "", note: r.note || "", active: r.active });
-const mapRentalExpense = (r) => ({ id: r.id, propertyId: r.property_id, month: r.month, category: r.category, amount: Number(r.amount), note: r.note || "" });
+const mapRentalExpense = (r) => ({ id: r.id, propertyId: r.property_id, kind: r.kind === "recurring" ? "recurring" : "extra", month: r.month || null, fromMonth: r.from_month || null, toMonth: r.to_month || null, category: r.category, amount: Number(r.amount), note: r.note || "" });
 const mapLeaveRequest = (r) => ({ id: r.id, employeeId: r.employee_id, startDate: r.start_date, endDate: r.end_date, type: r.type, note: r.note || "", status: r.status, decidedBy: r.decided_by, decidedAt: r.decided_at });
 
 // A small shared key/value setting (e.g. Dashboard "Customize" choices),
@@ -1648,7 +1659,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, allocationChart: true, revenueCostChart: true,
-    byClientTable: true, byEmployeeTable: true, departmentTable: true, costCenterTable: true,
+    byClientTable: true, byEmployeeTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
@@ -1767,6 +1778,12 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     const headcount = employeeCosts.filter((ec) => ec.department === dep.key).length;
     return { key: dep.key, label: dep.label, costCenters: rows, unallocatedCost: unallocatedCostByDepartment[dep.key] || 0, headcount, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
   });
+  // Compact profitability view: one line per department plus company total.
+  const profitRows = [
+    ...byDepartment.map((d) => ({ key: d.key, label: d.label, revenue: d.revenue, cost: d.cost, profit: d.profit, margin: d.margin })),
+    ...((revenueByCC[UNALLOCATED] || 0) > 0.005 ? [{ key: UNALLOCATED, label: "Fees with no split yet", revenue: revenueByCC[UNALLOCATED], cost: 0, profit: revenueByCC[UNALLOCATED], margin: null }] : []),
+    { key: "total", label: "Company total", revenue: totalRevenue, cost: totalCost, profit: totalProfit, margin: overallMargin },
+  ];
   const unallocatedRevenue = revenueByCC[UNALLOCATED] || 0;
   const unallocatedRow = unallocatedRevenue > 0.005 ? { revenue: unallocatedRevenue, cost: 0, profit: unallocatedRevenue } : null;
 
@@ -1855,6 +1872,10 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         "Revenue (€)": Number(e.revenue.toFixed(2)), "Cost (€)": Number(e.cost.toFixed(2)), "Profit (€)": Number(e.profit.toFixed(2)),
         "Margin (%)": e.margin !== null ? Number(e.margin.toFixed(1)) : "",
       })) },
+      { name: "Profitability", rows: profitRows.map((d) => ({
+        Department: d.label, "Revenue (€)": Number(d.revenue.toFixed(2)), "Cost (€)": Number(d.cost.toFixed(2)),
+        "Profit (€)": Number(d.profit.toFixed(2)), "Profit % of revenue": d.margin !== null ? Number(d.margin.toFixed(1)) : "",
+      })) },
       { name: "By department", rows: [
         ...byDepartment.map((d) => ({
           Department: d.label, "Revenue (€)": Number(d.revenue.toFixed(2)), "Cost (€)": Number(d.cost.toFixed(2)),
@@ -1881,7 +1902,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
 
   const CONFIG_LABELS = {
     statCards: "Summary cards", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
-    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", departmentTable: "P&L by department", costCenterTable: "Revenue & cost by cost center",
+    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
   };
@@ -2019,6 +2040,25 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                 </tr>
               ))}
             </TableShell>
+        </Panel>
+      )}
+
+      {config.profitabilityTable && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Profitability by department</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Revenue − Cost = Profit, and Profit as a % of Revenue, for {periodLabel(period, rangeStart, rangeEnd)}.</div>
+          <TableShell headers={["Department", "Revenue", "− Cost", "= Profit", "Profit % of revenue", "Share of company profit"]}>
+            {profitRows.map((d) => (
+              <tr key={d.key} style={{ fontWeight: d.key === "total" ? 700 : 400, borderTop: d.key === "total" ? `2px solid ${C.borderStrong}` : undefined }}>
+                <Td>{d.label}</Td>
+                <Td mono>{fmtEur(d.revenue)}</Td>
+                <Td mono>{fmtEur(d.cost)}</Td>
+                <Td mono style={{ color: d.profit < 0 ? C.danger : C.accentDark, fontWeight: 700 }}>{fmtEur(d.profit)}</Td>
+                <Td>{d.margin !== null ? <Badge tone={d.margin < 0 ? "danger" : d.margin < 20 ? "warn" : "accent"}>{d.margin.toFixed(1)}%</Badge> : "—"}</Td>
+                <Td mono style={{ color: C.inkMuted }}>{d.key === "total" ? "100%" : (totalProfit > 0 ? (d.profit / totalProfit * 100).toFixed(0) + "%" : "—")}</Td>
+              </tr>
+            ))}
+          </TableShell>
         </Panel>
       )}
 
@@ -3201,8 +3241,12 @@ function AdminRental({ properties, expenses, refetchRental }) {
   const [propAddress, setPropAddress] = useState("");
   const [propNote, setPropNote] = useState("");
   const [expModal, setExpModal] = useState(false);
+  const [expEditingId, setExpEditingId] = useState(null);
+  const [expKind, setExpKind] = useState("recurring");
   const [expPropertyId, setExpPropertyId] = useState("");
   const [expMonth, setExpMonth] = useState(toKey(TODAY).slice(0, 7));
+  const [expFromMonth, setExpFromMonth] = useState(toKey(TODAY).slice(0, 7));
+  const [expToMonth, setExpToMonth] = useState("");
   const [expCategory, setExpCategory] = useState("rent");
   const [expAmount, setExpAmount] = useState("");
   const [expNote, setExpNote] = useState("");
@@ -3212,13 +3256,15 @@ function AdminRental({ properties, expenses, refetchRental }) {
   const accrued = rentalExpensesForRange(expenses, rangeStart, rangeEnd);
   const propName_ = (id) => properties.find((p) => p.id === id)?.name || "—";
 
-  // Entries whose booked month overlaps the period (for the detail list).
+  // Entries that apply to at least one month of the period (for the detail list).
   const monthsInRange = [];
-  for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) monthsInRange.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}`);
+  for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) monthsInRange.push(monthKeyOf(d));
+  const startKeyOf = (x) => x.kind === "recurring" ? (x.fromMonth || "") : (x.month || "");
   const periodEntries = expenses
-    .filter((x) => monthsInRange.includes(x.month))
+    .filter((x) => monthsInRange.some((m) => rentalExpenseAppliesTo(x, m)))
     .filter((x) => propFilter === "all" || x.propertyId === propFilter)
-    .sort((a, b) => b.month.localeCompare(a.month) || propName_(a.propertyId).localeCompare(propName_(b.propertyId)));
+    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "recurring" ? -1 : 1) || startKeyOf(b).localeCompare(startKeyOf(a)) || propName_(a.propertyId).localeCompare(propName_(b.propertyId)));
+  const whenLabel = (x) => x.kind === "recurring" ? `${fmtMonthKey(x.fromMonth)} → ${x.toMonth ? fmtMonthKey(x.toMonth) : "open"}` : fmtMonthKey(x.month);
 
   function openNewProperty() { setPropModal("new"); setPropName(""); setPropAddress(""); setPropNote(""); }
   function openEditProperty(p) { setPropModal(p); setPropName(p.name); setPropAddress(p.address || ""); setPropNote(p.note || ""); }
@@ -3247,18 +3293,38 @@ function AdminRental({ properties, expenses, refetchRental }) {
     refetchRental();
   }
 
-  function openNewExpense(propertyId) {
+  function openNewExpense(propertyId, kind = "recurring") {
+    setExpEditingId(null);
+    setExpKind(kind);
     setExpPropertyId(propertyId || properties.find((p) => p.active)?.id || "");
-    setExpMonth(`${rangeStart.getFullYear()}-${pad(rangeStart.getMonth() + 1)}`);
+    const m = monthKeyOf(rangeStart);
+    setExpMonth(m); setExpFromMonth(m); setExpToMonth("");
     setExpCategory("rent"); setExpAmount(""); setExpNote("");
+    setExpModal(true);
+  }
+  function openEditExpense(x) {
+    setExpEditingId(x.id);
+    setExpKind(x.kind);
+    setExpPropertyId(x.propertyId);
+    setExpMonth(x.month || monthKeyOf(rangeStart)); setExpFromMonth(x.fromMonth || monthKeyOf(rangeStart)); setExpToMonth(x.toMonth || "");
+    setExpCategory(x.category); setExpAmount(String(x.amount)); setExpNote(x.note || "");
     setExpModal(true);
   }
   async function saveExpense() {
     if (!expPropertyId) { window.alert("Choose a property first."); return; }
-    if (!expMonth || !expAmount || Number(expAmount) <= 0) { window.alert("Enter the month and an amount greater than zero."); return; }
-    const { error } = await supabase.from("rental_expenses").insert({
-      property_id: expPropertyId, month: expMonth, category: expCategory, amount: Number(expAmount), note: expNote.trim() || null,
-    });
+    if (!expAmount || Number(expAmount) <= 0) { window.alert("Enter an amount greater than zero."); return; }
+    if (expKind === "extra" && !expMonth) { window.alert("Choose the month this extra expense belongs to."); return; }
+    if (expKind === "recurring" && !expFromMonth) { window.alert("Choose the month the recurring expense starts."); return; }
+    if (expKind === "recurring" && expToMonth && expToMonth < expFromMonth) { window.alert('"To" month must be the same as or after the "From" month.'); return; }
+    const row = {
+      property_id: expPropertyId, kind: expKind, category: expCategory, amount: Number(expAmount), note: expNote.trim() || null,
+      month: expKind === "extra" ? expMonth : null,
+      from_month: expKind === "recurring" ? expFromMonth : null,
+      to_month: expKind === "recurring" ? (expToMonth || null) : null,
+    };
+    const { error } = expEditingId
+      ? await supabase.from("rental_expenses").update(row).eq("id", expEditingId)
+      : await supabase.from("rental_expenses").insert(row);
     if (error) { window.alert(`Couldn't save expense: ${error.message}`); return; }
     await refetchRental();
     setExpModal(false);
@@ -3277,7 +3343,8 @@ function AdminRental({ properties, expenses, refetchRental }) {
           "Total (€)": Number((x.total || 0).toFixed(2)) };
       }) },
       { name: "Entries", rows: periodEntries.map((x) => ({
-        Month: x.month, Property: propName_(x.propertyId), Category: RENTAL_EXPENSE_LABELS[x.category] || x.category, "Amount (€)": x.amount, Note: x.note,
+        Type: x.kind === "recurring" ? "Recurring" : "Extra", From: x.kind === "recurring" ? x.fromMonth : x.month, To: x.kind === "recurring" ? (x.toMonth || "open") : x.month,
+        Property: propName_(x.propertyId), Category: RENTAL_EXPENSE_LABELS[x.category] || x.category, "Amount (€/month)": x.amount, Note: x.note,
       })) },
     ]);
   }
@@ -3289,12 +3356,13 @@ function AdminRental({ properties, expenses, refetchRental }) {
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="secondary" onClick={exportRental}>Export to Excel</Btn>
             <Btn variant="secondary" icon={Plus} onClick={openNewProperty}>Add property</Btn>
-            <Btn icon={Plus} onClick={() => openNewExpense()} disabled={properties.length === 0}>Add expense</Btn>
+            <Btn variant="secondary" icon={Plus} onClick={() => openNewExpense(null, "extra")} disabled={properties.length === 0}>Add extra</Btn>
+            <Btn icon={Plus} onClick={() => openNewExpense(null, "recurring")} disabled={properties.length === 0}>Add recurring expense</Btn>
           </div>
         } />
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>
-          Amounts below are accrued to this reporting period (a monthly booking is spread evenly over that month's days, so weekly and quarterly views reconcile with the dashboard).
+          Recurring expenses (rent, standing charges) run from a start month to an end month or open-ended; extras are one-off amounts for a single month. Everything is accrued to this reporting period (each month's amount is spread evenly over its days, so weekly and quarterly views reconcile with the dashboard).
         </div>
         <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
       </Panel>
@@ -3345,7 +3413,7 @@ function AdminRental({ properties, expenses, refetchRental }) {
 
       <Panel>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Booked entries in this period</div>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Expenses applying to this period</div>
           <select style={{ ...inputStyle, width: 220 }} value={propFilter} onChange={(e) => setPropFilter(e.target.value)}>
             <option value="all">All properties</option>
             {properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -3354,15 +3422,21 @@ function AdminRental({ properties, expenses, refetchRental }) {
         {periodEntries.length === 0 ? (
           <EmptyState icon={Euro} title="No expenses booked for these months" />
         ) : (
-          <TableShell headers={["Month", "Property", "Category", "Amount", "Note", ""]}>
+          <TableShell headers={["Type", "Period", "Property", "Category", "Amount / month", "Note", ""]}>
             {periodEntries.map((x) => (
               <tr key={x.id}>
-                <Td mono>{x.month}</Td>
+                <Td><Badge tone={x.kind === "recurring" ? "accent" : "warn"}>{x.kind === "recurring" ? "Recurring" : "Extra"}</Badge></Td>
+                <Td mono>{whenLabel(x)}</Td>
                 <Td>{propName_(x.propertyId)}</Td>
                 <Td>{RENTAL_EXPENSE_LABELS[x.category] || x.category}</Td>
                 <Td mono>{fmtEur(x.amount)}</Td>
                 <Td style={{ color: C.inkMuted }}>{x.note || "—"}</Td>
-                <Td right><button onClick={() => deleteExpense(x.id)} style={iconBtnStyle} title="Delete"><Trash2 size={13} color={C.inkMuted} /></button></Td>
+                <Td right>
+                  <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                    <button onClick={() => openEditExpense(x)} style={iconBtnStyle} title="Edit"><Pencil size={13} color={C.inkMuted} /></button>
+                    <button onClick={() => deleteExpense(x.id)} style={iconBtnStyle} title="Delete"><Trash2 size={13} color={C.inkMuted} /></button>
+                  </div>
+                </Td>
               </tr>
             ))}
           </TableShell>
@@ -3390,23 +3464,43 @@ function AdminRental({ properties, expenses, refetchRental }) {
       )}
 
       {expModal && (
-        <Modal title="Add rental expense" onClose={() => setExpModal(false)} width={400}>
+        <Modal title={expEditingId ? "Edit rental expense" : "Add rental expense"} onClose={() => setExpModal(false)} width={420}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+              {Object.keys(RENTAL_EXPENSE_KINDS).map((k) => (
+                <button key={k} type="button" onClick={() => setExpKind(k)}
+                  style={{ flex: 1, padding: "8px 10px", fontSize: 12.5, fontFamily: sans, fontWeight: 600, border: "none", cursor: "pointer",
+                    background: expKind === k ? C.accent : C.surface, color: expKind === k ? "#fff" : C.inkMuted }}>
+                  {RENTAL_EXPENSE_KINDS[k]}
+                </button>
+              ))}
+            </div>
             <Field label="Property">
               <select style={inputStyle} value={expPropertyId} onChange={(e) => setExpPropertyId(e.target.value)}>
                 <option value="">— choose —</option>
                 {properties.filter((p) => p.active || p.id === expPropertyId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </Field>
-            <Field label="Month">
-              <input type="month" style={inputStyle} value={expMonth} onChange={(e) => setExpMonth(e.target.value)} />
-            </Field>
+            {expKind === "extra" ? (
+              <Field label="Month">
+                <input type="month" style={inputStyle} value={expMonth} onChange={(e) => setExpMonth(e.target.value)} />
+              </Field>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="From month">
+                  <input type="month" style={inputStyle} value={expFromMonth} onChange={(e) => setExpFromMonth(e.target.value)} />
+                </Field>
+                <Field label="To month (leave empty = open-ended)">
+                  <input type="month" style={inputStyle} value={expToMonth} onChange={(e) => setExpToMonth(e.target.value)} />
+                </Field>
+              </div>
+            )}
             <Field label="Category">
               <select style={inputStyle} value={expCategory} onChange={(e) => setExpCategory(e.target.value)}>
                 {RENTAL_EXPENSE_CATEGORIES.map((k) => <option key={k} value={k}>{RENTAL_EXPENSE_LABELS[k]}</option>)}
               </select>
             </Field>
-            <Field label="Amount (€)">
+            <Field label={expKind === "recurring" ? "Amount per month (€)" : "Amount (€)"}>
               <input type="number" min="0" style={inputStyle} value={expAmount} onChange={(e) => setExpAmount(e.target.value)} placeholder="e.g. 850" autoFocus />
             </Field>
             <Field label="Note (optional)">
@@ -3414,7 +3508,7 @@ function AdminRental({ properties, expenses, refetchRental }) {
             </Field>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
               <Btn variant="secondary" onClick={() => setExpModal(false)}>Cancel</Btn>
-              <Btn onClick={saveExpense}>Add expense</Btn>
+              <Btn onClick={saveExpense}>{expEditingId ? "Save changes" : "Add expense"}</Btn>
             </div>
           </div>
         </Modal>
@@ -3537,4 +3631,3 @@ export default function App() {
     </div>
   );
 }
-
