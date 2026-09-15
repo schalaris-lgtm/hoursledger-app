@@ -60,6 +60,15 @@ const TODAY = new Date();
 const CATEGORIES = ["accounting", "tax", "payroll", "other"];
 const CATEGORY_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other" };
 
+// Internal, non-chargeable activities that can be logged instead of a
+// client. They count toward the employee's hours (weekly target, compliance)
+// but carry no revenue and are left out of the client cost attribution and
+// of the "by hours" cost-center driver.
+const ACTIVITIES = ["business_development", "training", "client_communication", "other_non_chargeable"];
+const ACTIVITY_LABELS = { business_development: "Business Development", training: "Training", client_communication: "Communication with Clients", other_non_chargeable: "Other non-chargeable" };
+const ACTIVITY_PREFIX = "act:"; // select values: a client id, or "act:<activity>"
+const isActivityValue = (v) => typeof v === "string" && v.startsWith(ACTIVITY_PREFIX);
+
 // Cost centers — the reporting dimension applied to every euro of revenue
 // (fixed fees split per client, extra fees tagged one by one) and of labor
 // cost (per employee: a fixed cost center, or spread by their logged hours).
@@ -362,9 +371,10 @@ function employeeCostByCostCenter(employee, cost, empPeriodEntries, deptRevenueB
   if (!(cost > 0)) return byCC;
   const dep = DEPARTMENTS.find((d) => d.key === (employee.department || DEFAULT_DEPARTMENT)) || DEPARTMENTS[0];
   if (dep.key === "accounting_team") {
-    const totalHours = empPeriodEntries.reduce((s, e) => s + e.hours, 0);
+    const chargeable = empPeriodEntries.filter((e) => !e.activity);
+    const totalHours = chargeable.reduce((s, e) => s + e.hours, 0);
     if (totalHours > 0) {
-      empPeriodEntries.forEach((e) => {
+      chargeable.forEach((e) => {
         const cat = CATEGORIES.includes(e.category) ? e.category : "other";
         byCC[cat] += cost * (e.hours / totalHours);
       });
@@ -1067,7 +1077,9 @@ const mapFeeHistory = (r) => ({
   feeSplitNote: r.cc_other_note || "",
 });
 const mapExtraFee = (r) => ({ id: r.id, clientId: r.client_id, month: r.month, amount: Number(r.amount), note: r.note || "", costCenter: r.cost_center || "other" });
-const mapEntry = (r) => ({ id: r.id, employeeId: r.employee_id, clientId: r.client_id, date: r.entry_date, hours: Number(r.hours), category: r.category, note: r.note || "" });
+const mapEntry = (r) => ({ id: r.id, employeeId: r.employee_id, clientId: r.client_id || null, activity: r.activity || null, date: r.entry_date, hours: Number(r.hours), category: r.category, note: r.note || "" });
+// Label for the "who/what" of an entry: the client's name, or the activity.
+const entryTargetLabel = (e, clients) => e.activity ? (ACTIVITY_LABELS[e.activity] || e.activity) : (clients.find((c) => c.id === e.clientId)?.name || "—");
 const mapLockedWeek = (r) => `${r.employee_id}|${r.week_start}`;
 const mapRentalProperty = (r) => ({ id: r.id, name: r.name, address: r.address || "", note: r.note || "", active: r.active });
 const mapRentalExpense = (r) => ({ id: r.id, propertyId: r.property_id, kind: r.kind === "recurring" ? "recurring" : "extra", month: r.month || null, fromMonth: r.from_month || null, toMonth: r.to_month || null, category: r.category, amount: Number(r.amount), note: r.note || "" });
@@ -1148,8 +1160,9 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
   const weeklyDiffLabel = onTargetWeek ? "On track" : weeklyDiff > 0 ? `+${weeklyDiff.toFixed(2)}h overtime` : `${weeklyDiff.toFixed(2)}h undertime`;
   const weeklyDiffColor = onTargetWeek ? C.accent : weeklyDiff > 0 ? C.warn : C.danger;
 
-  const clientName = (id) => clients.find((c) => c.id === id)?.name || "—";
-  const otherNoteRequired = form.category === "other";
+  const isActivity = isActivityValue(form.clientId);
+  const activityKey = isActivity ? form.clientId.slice(ACTIVITY_PREFIX.length) : null;
+  const otherNoteRequired = isActivity ? activityKey === "other_non_chargeable" : form.category === "other";
   const missingOtherNote = otherNoteRequired && !form.note.trim();
 
   async function addEntry() {
@@ -1157,10 +1170,14 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
     const d = fromKey(form.date);
     const wk = `${user.id}|${toKey(startOfWeek(d))}`;
     if (lockedWeeks.includes(wk)) return;
-    await supabase.from("time_entries").insert({
-      employee_id: user.id, client_id: form.clientId, category: form.category,
+    const { error } = await supabase.from("time_entries").insert({
+      employee_id: user.id,
+      client_id: isActivity ? null : form.clientId,
+      activity: isActivity ? activityKey : null,
+      category: isActivity ? "other" : form.category,
       entry_date: form.date, hours: Number(form.hours), note: form.note.trim() || null,
     });
+    if (error) { window.alert(`Couldn't add entry: ${error.message}`); return; }
     setForm((f) => ({ ...f, hours: "", note: "" }));
     refetchEntries();
   }
@@ -1183,7 +1200,7 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
 
   return (
     <div>
-      <PageHeader title="My Timesheet" sub="Log the hours you worked for each client, by day." />
+      <PageHeader title="My Timesheet" sub="Log the hours you worked for each client, by day — or for internal, non-chargeable activities." />
 
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <StatCard label="This week" value={weekTotal.toFixed(2) + "h"} accent={C.accent} />
@@ -1219,26 +1236,35 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
               <input type="date" style={{ ...inputStyle, width: 150 }} value={form.date}
                 onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
             </Field>
-            <Field label="Client">
-              <select style={{ ...inputStyle, width: 190 }} value={form.clientId}
+            <Field label="Client / activity">
+              <select style={{ ...inputStyle, width: 210 }} value={form.clientId}
                 onChange={(e) => setForm((f) => ({ ...f, clientId: e.target.value }))}>
-                {clients.filter((c) => c.active).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                <optgroup label="Clients">
+                  {clients.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Internal — non-chargeable">
+                  {ACTIVITIES.map((a) => (
+                    <option key={a} value={ACTIVITY_PREFIX + a}>{ACTIVITY_LABELS[a]}</option>
+                  ))}
+                </optgroup>
               </select>
             </Field>
-            <Field label="Category">
-              <select style={{ ...inputStyle, width: 140 }} value={form.category}
-                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
-                {CATEGORIES.map((cat) => <option key={cat} value={cat}>{CATEGORY_LABELS[cat]}</option>)}
-              </select>
-            </Field>
+            {!isActivity && (
+              <Field label="Category">
+                <select style={{ ...inputStyle, width: 140 }} value={form.category}
+                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
+                  {CATEGORIES.map((cat) => <option key={cat} value={cat}>{CATEGORY_LABELS[cat]}</option>)}
+                </select>
+              </Field>
+            )}
             <Field label="Hours">
               <input type="number" min="0.25" step="0.25" placeholder="e.g. 3.5" style={{ ...inputStyle, width: 90 }}
                 value={form.hours} onChange={(e) => setForm((f) => ({ ...f, hours: e.target.value }))} />
             </Field>
-            <Field label={otherNoteRequired ? "Note (required for \"Other\")" : "Note (optional)"}>
-              <input type="text" placeholder="e.g. VAT return review" style={{ ...inputStyle, width: 200, ...(missingOtherNote ? { border: `1px solid ${C.danger}` } : {}) }}
+            <Field label={otherNoteRequired ? (isActivity ? "Note (required for \"Other non-chargeable\")" : "Note (required for \"Other\")") : "Note (optional)"}>
+              <input type="text" placeholder={isActivity ? "e.g. Seminar on new tax law" : "e.g. VAT return review"} style={{ ...inputStyle, width: 200, ...(missingOtherNote ? { border: `1px solid ${C.danger}` } : {}) }}
                 value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} />
             </Field>
             <Btn icon={Plus} onClick={addEntry} disabled={missingOtherNote}>Add entry</Btn>
@@ -1264,8 +1290,8 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
                     {dayEntries.map((e) => (
                       <div key={e.id}>
                         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ fontFamily: sans, fontSize: 13, color: C.ink, minWidth: 170 }}>{clientName(e.clientId)}</span>
-                          <Badge tone="neutral">{CATEGORY_LABELS[e.category] || "Other"}</Badge>
+                          <span style={{ fontFamily: sans, fontSize: 13, color: C.ink, minWidth: 170 }}>{entryTargetLabel(e, clients)}</span>
+                          {e.activity ? <Badge tone="warn">Non-chargeable</Badge> : <Badge tone="neutral">{CATEGORY_LABELS[e.category] || "Other"}</Badge>}
                           {editingId === e.id ? (
                             <>
                               <input type="number" min="0.25" step="0.25" autoFocus value={editHours}
@@ -1659,7 +1685,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, allocationChart: true, revenueCostChart: true,
-    byClientTable: true, byEmployeeTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
+    byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
@@ -1715,7 +1741,8 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // not a payroll or commission calculation.
   const byEmployee = employees.filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rangeEnd))).map((emp) => {
     const hrs = rangeEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
-    const clientsTouched = new Set(rangeEntries.filter((e) => e.employeeId === emp.id).map((e) => e.clientId)).size;
+    const clientsTouched = new Set(rangeEntries.filter((e) => e.employeeId === emp.id && e.clientId).map((e) => e.clientId)).size;
+    const nonChargeableHrs = rangeEntries.filter((e) => e.employeeId === emp.id && e.activity).reduce((s, e) => s + e.hours, 0);
     const revenue = byClient.reduce((sum, c) => {
       const clientTotalHrs = c.hours;
       if (clientTotalHrs <= 0) return sum;
@@ -1725,8 +1752,17 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     const cost = employeeCosts.find((ec) => ec.id === emp.id)?.cost || 0;
     const profit = revenue - cost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : null;
-    return { ...emp, hours: hrs, clientsTouched, revenue, effectiveRate: hrs > 0 ? revenue / hrs : null, cost, profit, margin };
+    return { ...emp, hours: hrs, chargeableHours: hrs - nonChargeableHrs, nonChargeableHrs, clientsTouched, revenue, effectiveRate: hrs > 0 ? revenue / hrs : null, cost, profit, margin };
   }).sort((a, b) => b.hours - a.hours);
+
+  // Non-chargeable time in the period, by activity — hours that carry no
+  // revenue (business development, training, client communication, other).
+  const totalHoursInPeriod = rangeEntries.reduce((s, e) => s + e.hours, 0);
+  const nonChargeable = ACTIVITIES.map((a) => {
+    const hours = rangeEntries.filter((e) => e.activity === a).reduce((s, e) => s + e.hours, 0);
+    return { key: a, label: ACTIVITY_LABELS[a], hours, share: totalHoursInPeriod > 0 ? (hours / totalHoursInPeriod) * 100 : 0 };
+  });
+  const nonChargeableTotal = nonChargeable.reduce((s, r) => s + r.hours, 0);
 
   const totalLaborCost = byEmployee.reduce((s, e) => s + e.cost, 0);
   // Non-labor cost: rental expenses (rent, utilities, common expenses) booked
@@ -1874,8 +1910,9 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         "Revenue (€)": Number(c.revenue.toFixed(2)), "Cost (€)": Number(c.cost.toFixed(2)), "Profit (€)": Number(c.profit.toFixed(2)),
         "Margin (%)": c.margin !== null ? Number(c.margin.toFixed(1)) : "",
       })) },
+      { name: "Non-chargeable time", rows: nonChargeable.map((r) => ({ Activity: r.label, Hours: Number(r.hours.toFixed(2)), "Share of all hours (%)": Number(r.share.toFixed(1)) })) },
       { name: "By employee", rows: byEmployee.map((e) => ({
-        Employee: e.name, Hours: Number(e.hours.toFixed(2)), Clients: e.clientsTouched,
+        Employee: e.name, Hours: Number(e.hours.toFixed(2)), "Chargeable hours": Number(e.chargeableHours.toFixed(2)), "Non-chargeable hours": Number(e.nonChargeableHrs.toFixed(2)), Clients: e.clientsTouched,
         "Revenue (€)": Number(e.revenue.toFixed(2)), "Cost (€)": Number(e.cost.toFixed(2)), "Profit (€)": Number(e.profit.toFixed(2)),
         "Margin (%)": e.margin !== null ? Number(e.margin.toFixed(1)) : "",
       })) },
@@ -1909,7 +1946,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
 
   const CONFIG_LABELS = {
     statCards: "Summary cards", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
-    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
+    byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
   };
@@ -2034,11 +2071,13 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
       {config.byEmployeeTable && (
         <Panel style={{ marginBottom: 18 }}>
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 12 }}>Hours by employee</div>
-            <TableShell headers={["Employee", "Hours", "Clients", "Revenue", "Cost", "Profit", "Margin"]}>
+            <TableShell headers={["Employee", "Hours", "Chargeable", "Non-chargeable", "Clients", "Revenue", "Cost", "Profit", "Margin"]}>
               {byEmployee.map((e) => (
                 <tr key={e.id}>
                   <Td>{e.name}</Td>
                   <Td mono>{e.hours.toFixed(2)}h</Td>
+                  <Td mono>{e.chargeableHours.toFixed(2)}h{e.hours > 0 ? <span style={{ color: C.inkFaint, fontWeight: 400 }}> ({(e.chargeableHours / e.hours * 100).toFixed(0)}%)</span> : null}</Td>
+                  <Td mono style={{ color: e.nonChargeableHrs > 0 ? C.warn : undefined }}>{e.nonChargeableHrs > 0 ? e.nonChargeableHrs.toFixed(2) + "h" : "—"}</Td>
                   <Td mono>{e.clientsTouched}</Td>
                   <Td mono>{fmtEur(e.revenue)}</Td>
                   <Td mono>{fmtEur(e.cost)}</Td>
@@ -2047,6 +2086,29 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                 </tr>
               ))}
             </TableShell>
+        </Panel>
+      )}
+
+      {config.nonChargeableTable && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Non-chargeable time</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+            Hours logged to internal activities instead of a client — {nonChargeableTotal.toFixed(2)}h of {totalHoursInPeriod.toFixed(2)}h in the period ({totalHoursInPeriod > 0 ? (nonChargeableTotal / totalHoursInPeriod * 100).toFixed(0) : 0}%). These hours carry no revenue and are not attributed to clients.
+          </div>
+          <TableShell headers={["Activity", "Hours", "Share of all hours"]}>
+            {nonChargeable.map((r) => (
+              <tr key={r.key}>
+                <Td>{r.label}</Td>
+                <Td mono>{r.hours.toFixed(2)}h</Td>
+                <Td mono style={{ color: C.inkMuted }}>{r.share.toFixed(1)}%</Td>
+              </tr>
+            ))}
+            <tr style={{ fontWeight: 700 }}>
+              <Td>Total non-chargeable</Td>
+              <Td mono>{nonChargeableTotal.toFixed(2)}h</Td>
+              <Td mono>{totalHoursInPeriod > 0 ? (nonChargeableTotal / totalHoursInPeriod * 100).toFixed(1) : "0.0"}%</Td>
+            </tr>
+          </TableShell>
         </Panel>
       )}
 
@@ -2275,13 +2337,12 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const [editNote, setEditNote] = useState("");
 
   const weekEnd = addDays(weekStart, 6);
-  const clientName = (id) => clients.find((c) => c.id === id)?.name || "—";
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
 
   const rows = entries
     .filter((e) => { const d = fromKey(e.date); return d >= weekStart && d <= weekEnd; })
     .filter((e) => empFilter === "all" || e.employeeId === empFilter)
-    .filter((e) => clientFilter === "all" || e.clientId === clientFilter)
+    .filter((e) => clientFilter === "all" || (clientFilter === "internal" ? !!e.activity : e.clientId === clientFilter))
     .sort((a, b) => a.date.localeCompare(b.date) || empName(a.employeeId).localeCompare(empName(b.employeeId)));
 
   async function saveEdit(id) {
@@ -2349,7 +2410,8 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
           </Field>
           <Field label="Client">
             <select style={{ ...inputStyle, width: 170 }} value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}>
-              <option value="all">All clients</option>
+              <option value="all">All clients &amp; activities</option>
+              <option value="internal">Internal — non-chargeable only</option>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </Field>
@@ -2358,15 +2420,15 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
         {rows.length === 0 ? (
           <EmptyState icon={Clock} title="No entries match these filters" />
         ) : (
-          <TableShell headers={["Date", "Employee", "Client", "Category", "Hours", "Note", "Status", ""]}>
+          <TableShell headers={["Date", "Employee", "Client / activity", "Category", "Hours", "Note", "Status", ""]}>
             {rows.map((e) => {
               const locked = isRowLocked(e);
               return (
                 <tr key={e.id}>
                   <Td>{fmtDow(fromKey(e.date))} {fmtShort(fromKey(e.date))}</Td>
                   <Td>{empName(e.employeeId)}</Td>
-                  <Td>{clientName(e.clientId)}</Td>
-                  <Td>{CATEGORY_LABELS[e.category] || "Other"}</Td>
+                  <Td>{entryTargetLabel(e, clients)}</Td>
+                  <Td>{e.activity ? <Badge tone="warn">Non-chargeable</Badge> : (CATEGORY_LABELS[e.category] || "Other")}</Td>
                   <Td mono>
                     {editingId === e.id ? (
                       <input type="number" min="0.25" step="0.25" autoFocus value={editHours}
