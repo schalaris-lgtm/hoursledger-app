@@ -56,7 +56,11 @@ const FontImport = () => (
   `}</style>
 );
 
-const TODAY = new Date();
+// Midnight today. Every date the app compares is a local midnight (fromKey,
+// startOfMonth, ...), so "today" must be one too — otherwise Monday's
+// entries (00:00) fall before a week start that still carries the current
+// time of day, and silently disappear from the week view.
+const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
 const CATEGORIES = ["accounting", "tax", "payroll", "other"];
 const CATEGORY_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other" };
 
@@ -112,7 +116,7 @@ const pad = (n) => String(n).padStart(2, "0");
 const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fromKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-const startOfWeek = (d) => { const r = new Date(d); const day = (r.getDay() + 6) % 7; return addDays(r, -day); };
+const startOfWeek = (d) => { const r = new Date(d); r.setHours(0, 0, 0, 0); const day = (r.getDay() + 6) % 7; return addDays(r, -day); };
 const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
 const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
 const sameMonth = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
