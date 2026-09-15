@@ -1039,16 +1039,32 @@ function Sidebar({ user, view, setView }) {
 /* Supabase table hook: fetches once, then stays live via realtime         */
 /* ---------------------------------------------------------------------- */
 
+// Supabase returns at most 1,000 rows per request. Tables like time_entries
+// grow past that within weeks, and without paging the newest rows would
+// silently drop out of the app — so every table is fetched in pages until
+// a short page comes back. Rows are ordered by a stable key so pages don't
+// overlap or skip.
+const PAGE_SIZE = 1000;
+const STABLE_ORDER = { locked_weeks: ["employee_id", "week_start"], app_settings: ["key"] };
 function useTable(table, mapRow, orderColumn) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const refetch = useCallback(async () => {
     if (!supabase) { setLoading(false); return; }
-    let q = supabase.from(table).select("*");
-    if (orderColumn) q = q.order(orderColumn, { ascending: true });
-    const { data, error } = await q;
-    if (!error && data) setRows(data.map(mapRow));
+    const orderKeys = orderColumn ? [orderColumn, "id"] : (STABLE_ORDER[table] || ["id"]);
+    const all = [];
+    let from = 0;
+    while (true) {
+      let q = supabase.from(table).select("*").range(from, from + PAGE_SIZE - 1);
+      orderKeys.forEach((k) => { q = q.order(k, { ascending: true }); });
+      const { data, error } = await q;
+      if (error) { console.error(`Couldn't load ${table}:`, error.message); setLoading(false); return; }
+      all.push(...(data || []));
+      if (!data || data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    setRows(all.map(mapRow));
     setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table]);
@@ -1145,6 +1161,21 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
   const isLocked = lockedWeeks.includes(weekKey);
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
+  // Moving between weeks (including past ones) also moves the entry date
+  // into that week — same weekday — so backdated hours land where you're
+  // looking. Any date can be typed in the Date field directly as well.
+  function goToWeek(newStart) {
+    setWeekStart(newStart);
+    setForm((f) => {
+      const cur = f.date ? fromKey(f.date) : TODAY;
+      const dow = (cur.getDay() + 6) % 7; // Monday = 0
+      return { ...f, date: toKey(addDays(newStart, dow)) };
+    });
+  }
+  const formDate = form.date ? fromKey(form.date) : null;
+  const formDateInWeek = formDate && formDate >= weekStart && formDate <= addDays(weekStart, 6);
+  const formWeekLocked = formDate ? lockedWeeks.includes(`${user.id}|${toKey(startOfWeek(formDate))}`) : false;
+
   const myEntries = entries.filter((e) => e.employeeId === user.id);
   const weekEntries = myEntries.filter((e) => {
     const d = fromKey(e.date);
@@ -1169,7 +1200,10 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
     if (!form.clientId || !form.hours || Number(form.hours) <= 0 || missingOtherNote) return;
     const d = fromKey(form.date);
     const wk = `${user.id}|${toKey(startOfWeek(d))}`;
-    if (lockedWeeks.includes(wk)) return;
+    if (lockedWeeks.includes(wk)) {
+      window.alert(`The week of ${fmtShort(startOfWeek(d))} is submitted and locked. Ask your manager to reopen it before adding hours there.`);
+      return;
+    }
     const { error } = await supabase.from("time_entries").insert({
       employee_id: user.id,
       client_id: isActivity ? null : form.clientId,
@@ -1179,6 +1213,9 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
     });
     if (error) { window.alert(`Couldn't add entry: ${error.message}`); return; }
     setForm((f) => ({ ...f, hours: "", note: "" }));
+    // If the hours were for another week (e.g. backdated), show that week.
+    const wkStart = startOfWeek(d);
+    if (toKey(wkStart) !== toKey(weekStart)) setWeekStart(wkStart);
     refetchEntries();
   }
   async function removeEntry(id) {
@@ -1211,7 +1248,7 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
 
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-          <WeekNav weekStart={weekStart} setWeekStart={setWeekStart} />
+          <WeekNav weekStart={weekStart} setWeekStart={goToWeek} />
           {!isLocked ? (
             <Btn variant="primary" size="sm" icon={Lock} onClick={lockWeek}>Submit week</Btn>
           ) : (
@@ -1232,8 +1269,8 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
             display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 18, flexWrap: "wrap",
             borderBottom: `1px solid ${C.border}`, paddingBottom: 18,
           }}>
-            <Field label="Date">
-              <input type="date" style={{ ...inputStyle, width: 150 }} value={form.date}
+            <Field label="Date (any date, past weeks included)">
+              <input type="date" style={{ ...inputStyle, width: 150, ...(formWeekLocked ? { border: `1px solid ${C.danger}` } : {}) }} value={form.date}
                 onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
             </Field>
             <Field label="Client / activity">
@@ -1267,7 +1304,17 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
               <input type="text" placeholder={isActivity ? "e.g. Seminar on new tax law" : "e.g. VAT return review"} style={{ ...inputStyle, width: 200, ...(missingOtherNote ? { border: `1px solid ${C.danger}` } : {}) }}
                 value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} />
             </Field>
-            <Btn icon={Plus} onClick={addEntry} disabled={missingOtherNote}>Add entry</Btn>
+            <Btn icon={Plus} onClick={addEntry} disabled={missingOtherNote || formWeekLocked}>Add entry</Btn>
+            {formWeekLocked && (
+              <div style={{ width: "100%", fontFamily: sans, fontSize: 12, color: C.danger }}>
+                The week containing {form.date} is submitted and locked — ask your manager to reopen it.
+              </div>
+            )}
+            {!formWeekLocked && formDate && !formDateInWeek && (
+              <div style={{ width: "100%", fontFamily: sans, fontSize: 12, color: C.inkMuted }}>
+                This entry will be saved to the week of {fmtShort(startOfWeek(formDate))} and the view will jump there.
+              </div>
+            )}
           </div>
         )}
 
@@ -1281,6 +1328,12 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
                   {fmtDow(day)} {fmtShort(day)}
                 </div>
                 {isWeekend(day) && <div style={{ fontFamily: sans, fontSize: 10.5, color: C.inkFaint }}>Weekend</div>}
+                {!isLocked && (
+                  <button onClick={() => setForm((f) => ({ ...f, date: toKey(day) }))} title={`Add hours for ${fmtShort(day)}`}
+                    style={{ ...iconBtnStyle, padding: 0, marginTop: 4, fontFamily: sans, fontSize: 11, color: form.date === toKey(day) ? C.accent : C.inkFaint, fontWeight: form.date === toKey(day) ? 700 : 500, alignItems: "center", gap: 3 }}>
+                    <Plus size={11} /> {form.date === toKey(day) ? "Selected" : "Add hours"}
+                  </button>
+                )}
               </div>
               <div style={{ flex: 1 }}>
                 {dayEntries.length === 0 ? (
@@ -1394,12 +1447,15 @@ function TimeOff({ user, employees, leaveRequests, refetchLeaveRequests }) {
         <Panel style={{ flex: "0 0 320px" }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 14 }}>New request</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <Field label="Start date">
-              <input type="date" style={inputStyle} value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))} />
+            <Field label="Start date (past dates allowed — e.g. leave already taken)">
+              <input type="date" style={inputStyle} value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value, endDate: f.endDate < e.target.value ? e.target.value : f.endDate }))} />
             </Field>
             <Field label="End date">
               <input type="date" style={inputStyle} value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))} />
             </Field>
+            {!validRange && form.startDate && form.endDate && (
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.danger }}>End date must be the same as or after the start date.</div>
+            )}
             <Field label="Type">
               <select style={inputStyle} value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
                 {Object.entries(LEAVE_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
