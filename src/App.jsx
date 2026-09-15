@@ -1842,7 +1842,14 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
 
   // Company-wide monthly overview: new clients added, revenue, cost, profit.
   const companyMonthly = trendMonths.map((m) => {
-    const newClients = clients.filter((c) => c.createdAt && fromKey(c.createdAt) >= m.start && fromKey(c.createdAt) <= m.end).length;
+    // "New" = the month the client's revenue starts (earliest "Effective
+    // from" in their fee history), not when the row was created.
+    const newClients = clients.filter((c) => {
+      const start = earliestHistoryDate(c.feeHistory);
+      if (!start) return false;
+      const d = fromKey(start);
+      return d >= m.start && d <= m.end;
+    }).length;
     const monthEntries = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
     const revenue = clients.filter((c) => c.active).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
     const cost = employees.filter((e) => e.active).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
@@ -2433,6 +2440,7 @@ function AdminClients({ clients, refetchClients, entries }) {
   const [viewPeriod, setViewPeriod] = useState("month");
   const [viewAnchor, setViewAnchor] = useState(TODAY);
   const [extraFeeClientId, setExtraFeeClientId] = useState(null);
+  const [extraFeeEditingId, setExtraFeeEditingId] = useState(null);
   const [extraFeeMonth, setExtraFeeMonth] = useState("");
   const [extraFeeAmount, setExtraFeeAmount] = useState("");
   const [extraFeeNote, setExtraFeeNote] = useState("");
@@ -2592,10 +2600,21 @@ function AdminClients({ clients, refetchClients, entries }) {
 
   function openExtraFee(clientId, defaultMonth) {
     setExtraFeeClientId(clientId);
+    setExtraFeeEditingId(null);
     setExtraFeeMonth(defaultMonth);
     setExtraFeeAmount("");
     setExtraFeeNote("");
     setExtraFeeCostCenter("accounting");
+  }
+  // Edit an existing extra fee (month, amount, cost center, note) — same
+  // modal as "add"; saving updates the row in place.
+  function openEditExtraFee(clientId, x) {
+    setExtraFeeClientId(clientId);
+    setExtraFeeEditingId(x.id);
+    setExtraFeeMonth(x.month);
+    setExtraFeeAmount(String(x.amount));
+    setExtraFeeNote(x.note || "");
+    setExtraFeeCostCenter(COST_CENTERS.includes(x.costCenter) ? x.costCenter : "other");
   }
   async function saveExtraFee() {
     if (!extraFeeMonth || !extraFeeAmount || Number(extraFeeAmount) <= 0) return;
@@ -2603,9 +2622,14 @@ function AdminClients({ clients, refetchClients, entries }) {
       window.alert('A note is required when the cost center is "Other" — say what this fee is for.');
       return;
     }
-    await supabase.from("client_extra_fees").insert({ client_id: extraFeeClientId, month: extraFeeMonth, amount: Number(extraFeeAmount), note: extraFeeNote.trim() || null, cost_center: extraFeeCostCenter });
+    const row = { month: extraFeeMonth, amount: Number(extraFeeAmount), note: extraFeeNote.trim() || null, cost_center: extraFeeCostCenter };
+    const { error } = extraFeeEditingId
+      ? await supabase.from("client_extra_fees").update(row).eq("id", extraFeeEditingId)
+      : await supabase.from("client_extra_fees").insert({ client_id: extraFeeClientId, ...row });
+    if (error) { window.alert(`Couldn't save extra fee: ${error.message}`); return; }
     await refetchClients();
     setExtraFeeClientId(null);
+    setExtraFeeEditingId(null);
   }
   async function deleteExtraFee(entryId) {
     await supabase.from("client_extra_fees").delete().eq("id", entryId);
@@ -2817,7 +2841,10 @@ function AdminClients({ clients, refetchClients, entries }) {
                           <td style={{ padding: "3px 6px", color: C.ink }}>{costCenterLabel(x.costCenter)}</td>
                           <td style={{ padding: "3px 6px", color: C.ink }}>{x.note || "—"}</td>
                           <td style={{ padding: "3px 6px" }}>
-                            <button onClick={() => deleteExtraFee(x.id)} style={iconBtnStyle}><Trash2 size={12} color={C.inkMuted} /></button>
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button onClick={() => openEditExtraFee(liveClient.id, x)} style={iconBtnStyle} title="Edit"><Pencil size={12} color={C.inkMuted} /></button>
+                              <button onClick={() => deleteExtraFee(x.id)} style={iconBtnStyle} title="Delete"><Trash2 size={12} color={C.inkMuted} /></button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2906,7 +2933,7 @@ function AdminClients({ clients, refetchClients, entries }) {
       )}
 
       {extraFeeClientId && (
-        <Modal title={`Add extra fee — ${clients.find((c) => c.id === extraFeeClientId)?.name || ""}`} onClose={() => setExtraFeeClientId(null)} width={360}>
+        <Modal title={`${extraFeeEditingId ? "Edit" : "Add"} extra fee — ${clients.find((c) => c.id === extraFeeClientId)?.name || ""}`} onClose={() => { setExtraFeeClientId(null); setExtraFeeEditingId(null); }} width={360}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Field label="Month">
               <input type="month" style={inputStyle} value={extraFeeMonth} onChange={(e) => setExtraFeeMonth(e.target.value)} />
@@ -2924,7 +2951,7 @@ function AdminClients({ clients, refetchClients, entries }) {
             </Field>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
               <Btn variant="secondary" onClick={() => setExtraFeeClientId(null)}>Cancel</Btn>
-              <Btn onClick={saveExtraFee}>Add fee</Btn>
+              <Btn onClick={saveExtraFee}>{extraFeeEditingId ? "Save changes" : "Add fee"}</Btn>
             </div>
           </div>
         </Modal>
@@ -3312,7 +3339,8 @@ function AdminRental({ properties, expenses, refetchRental }) {
   }
   async function saveExpense() {
     if (!expPropertyId) { window.alert("Choose a property first."); return; }
-    if (!expAmount || Number(expAmount) <= 0) { window.alert("Enter an amount greater than zero."); return; }
+    if (expKind === "recurring" && !(Number(expAmount) > 0)) { window.alert("Enter a monthly amount greater than zero."); return; }
+    if (expKind === "extra" && !(Number(expAmount) !== 0 && !Number.isNaN(Number(expAmount)) && expAmount !== "")) { window.alert("Enter an amount (negative for a discount or rebate)."); return; }
     if (expKind === "extra" && !expMonth) { window.alert("Choose the month this extra expense belongs to."); return; }
     if (expKind === "recurring" && !expFromMonth) { window.alert("Choose the month the recurring expense starts."); return; }
     if (expKind === "recurring" && expToMonth && expToMonth < expFromMonth) { window.alert('"To" month must be the same as or after the "From" month.'); return; }
@@ -3386,8 +3414,8 @@ function AdminRental({ properties, expenses, refetchRental }) {
                 <tr key={p.id} style={{ opacity: p.active ? 1 : 0.55 }}>
                   <Td title={p.note || undefined}>{p.name}</Td>
                   <Td style={{ color: C.inkMuted }}>{p.address || "—"}</Td>
-                  {RENTAL_EXPENSE_CATEGORIES.map((k) => <Td key={k} mono>{x[k] > 0 ? fmtEur(x[k]) : "—"}</Td>)}
-                  <Td mono style={{ fontWeight: 700 }}>{x.total > 0 ? fmtEur(x.total) : "—"}</Td>
+                  {RENTAL_EXPENSE_CATEGORIES.map((k) => <Td key={k} mono>{Math.abs(x[k] || 0) > 0.005 ? fmtEur(x[k]) : "—"}</Td>)}
+                  <Td mono style={{ fontWeight: 700 }}>{Math.abs(x.total || 0) > 0.005 ? fmtEur(x.total) : "—"}</Td>
                   <Td>{p.active ? <Badge tone="accent">Active</Badge> : <Badge tone="neutral">Inactive</Badge>}</Td>
                   <Td right>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
@@ -3429,7 +3457,7 @@ function AdminRental({ properties, expenses, refetchRental }) {
                 <Td mono>{whenLabel(x)}</Td>
                 <Td>{propName_(x.propertyId)}</Td>
                 <Td>{RENTAL_EXPENSE_LABELS[x.category] || x.category}</Td>
-                <Td mono>{fmtEur(x.amount)}</Td>
+                <Td mono style={{ color: x.amount < 0 ? C.accentDark : undefined }}>{fmtEur(x.amount)}{x.amount < 0 ? " (discount)" : ""}</Td>
                 <Td style={{ color: C.inkMuted }}>{x.note || "—"}</Td>
                 <Td right>
                   <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
@@ -3500,8 +3528,8 @@ function AdminRental({ properties, expenses, refetchRental }) {
                 {RENTAL_EXPENSE_CATEGORIES.map((k) => <option key={k} value={k}>{RENTAL_EXPENSE_LABELS[k]}</option>)}
               </select>
             </Field>
-            <Field label={expKind === "recurring" ? "Amount per month (€)" : "Amount (€)"}>
-              <input type="number" min="0" style={inputStyle} value={expAmount} onChange={(e) => setExpAmount(e.target.value)} placeholder="e.g. 850" autoFocus />
+            <Field label={expKind === "recurring" ? "Amount per month (€)" : "Amount (€) — enter a negative amount for a discount or rebate"}>
+              <input type="number" min={expKind === "recurring" ? "0" : undefined} style={inputStyle} value={expAmount} onChange={(e) => setExpAmount(e.target.value)} placeholder={expKind === "recurring" ? "e.g. 850" : "e.g. 120 or -300"} autoFocus />
             </Field>
             <Field label="Note (optional)">
               <input style={inputStyle} value={expNote} onChange={(e) => setExpNote(e.target.value)} placeholder="e.g. DEH electricity bill" />
