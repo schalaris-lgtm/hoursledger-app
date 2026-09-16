@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, Users, Building2, Clock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, LogOut, X, Lock, Unlock, AlertTriangle,
-  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home
+  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home, SlidersHorizontal
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend
@@ -995,6 +995,7 @@ function Sidebar({ user, view, setView }) {
     { key: "clients", label: "Clients", icon: Building2 },
     { key: "employees", label: "Employees", icon: Users },
     { key: "rental", label: "Rental", icon: Home },
+    { key: "reports", label: "Reports", icon: SlidersHorizontal },
   ];
   const items = user.role === "admin" ? adminNav : employeeNav;
   return (
@@ -3669,6 +3670,319 @@ function AdminRental({ properties, expenses, refetchRental }) {
 
 
 /* ---------------------------------------------------------------------- */
+/* Admin: Report builder — pick a dimension, get revenue/cost/profit      */
+/* ---------------------------------------------------------------------- */
+
+const REPORT_DIMENSIONS = [
+  { key: "client", label: "Client" },
+  { key: "employee", label: "Employee" },
+  { key: "costCenter", label: "Cost center" },
+  { key: "department", label: "Department" },
+  { key: "month", label: "Month" },
+  { key: "category", label: "Category (chargeable work)" },
+  { key: "activity", label: "Activity (non-chargeable)" },
+];
+const REPORT_METRICS = [
+  { key: "hours", label: "Hours", format: "hours" },
+  { key: "revenue", label: "Revenue", format: "eur" },
+  { key: "cost", label: "Cost", format: "eur" },
+  { key: "profit", label: "Profit", format: "eur" },
+  { key: "margin", label: "Margin %", format: "pct" },
+];
+// Which metrics are meaningful for each dimension — revenue/cost/profit/
+// margin aren't tracked per activity (non-chargeable, by definition), and
+// hours aren't meaningful for Director/Finance/Rental cost centers (nobody
+// logs hours there).
+const REPORT_METRICS_FOR = {
+  client: ["hours", "revenue", "cost", "profit", "margin"],
+  employee: ["hours", "revenue", "cost", "profit", "margin"],
+  costCenter: ["hours", "revenue", "cost", "profit", "margin"],
+  department: ["hours", "revenue", "cost", "profit", "margin"],
+  month: ["hours", "revenue", "cost", "profit", "margin"],
+  category: ["hours", "revenue", "cost", "profit", "margin"],
+  activity: ["hours"],
+};
+
+function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
+  const [dimension, setDimension] = useState("client");
+  const [metric, setMetric] = useState("profit");
+  const [period, setPeriod] = useState("quarter");
+  const [anchor, setAnchor] = useState(TODAY);
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [clientFilter, setClientFilter] = useState("all");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
+  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [sortDir, setSortDir] = useState("desc");
+  const [showChart, setShowChart] = useState(true);
+
+  const usingCustomRange = !!(customFrom && customTo);
+  const [presetStart, presetEnd] = periodRange(period, anchor);
+  const rangeStart = usingCustomRange ? fromKey(customFrom) : presetStart;
+  const rangeEnd = usingCustomRange ? fromKey(customTo) : presetEnd;
+  const validCustomRange = !usingCustomRange || customFrom <= customTo;
+
+  // Apply the three filters up front, to every downstream computation —
+  // this is what makes the "same" dimension report answer a narrower
+  // question (e.g. Cost center report, Accounting Team only).
+  const filteredClients = clients.filter((c) => clientFilter === "all" || c.id === clientFilter);
+  const filteredEmployees = employees.filter((e) =>
+    (departmentFilter === "all" || (e.department || DEFAULT_DEPARTMENT) === departmentFilter) &&
+    (employeeFilter === "all" || e.id === employeeFilter));
+  const includeRental = clientFilter === "all" && employeeFilter === "all" && (departmentFilter === "all" || departmentFilter === "rental");
+  const scopedEntries = entries.filter((e) =>
+    (!e.clientId || filteredClients.some((c) => c.id === e.clientId)) &&
+    filteredEmployees.some((emp) => emp.id === e.employeeId));
+
+  // Core aggregate for one arbitrary date range, given the (already
+  // filtered) clients/employees/entries in scope. Mirrors the dashboard's
+  // computation exactly, so figures reconcile with it when filters are
+  // left at "All".
+  function computeCore(rStart, rEnd) {
+    const rangeEntries = scopedEntries.filter((e) => { const d = fromKey(e.date); return d >= rStart && d <= rEnd; });
+    const employeeCosts = filteredEmployees
+      .filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rEnd)))
+      .map((emp) => {
+        const empEntries = rangeEntries.filter((e) => e.employeeId === emp.id);
+        return { id: emp.id, department: emp.department || DEFAULT_DEPARTMENT, entries: empEntries, hours: empEntries.reduce((s, e) => s + e.hours, 0), cost: periodEmployeeCost(emp, rStart, rEnd) };
+      });
+    const byClient = filteredClients
+      .filter((c) => c.active && (!earliestHistoryDate(c.feeHistory) || earliestHistoryDate(c.feeHistory) <= toKey(rEnd)))
+      .map((c) => {
+        const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
+        const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
+        const { revenue, revenueByCostCenter } = periodClientMetrics(c, clientEntries, rStart, rEnd);
+        const cost = employeeCosts.reduce((sum, ec) => {
+          if (ec.hours <= 0) return sum;
+          const empHrsForClient = clientEntries.filter((e) => e.employeeId === ec.id).reduce((s, e) => s + e.hours, 0);
+          return sum + ec.cost * (empHrsForClient / ec.hours);
+        }, 0);
+        const profit = revenue - cost;
+        return { id: c.id, label: c.name, hours: hrs, revenue, revenueByCostCenter, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+      });
+    const totalRevenue = byClient.reduce((s, c) => s + c.revenue, 0);
+    const byEmployee = filteredEmployees
+      .filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rEnd)))
+      .map((emp) => {
+        const hrs = rangeEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
+        const revenue = byClient.reduce((sum, c) => {
+          if (c.hours <= 0) return sum;
+          const empHrsForClient = rangeEntries.filter((e) => e.employeeId === emp.id && e.clientId === c.id).reduce((s, e) => s + e.hours, 0);
+          return sum + c.revenue * (empHrsForClient / c.hours);
+        }, 0);
+        const cost = employeeCosts.find((ec) => ec.id === emp.id)?.cost || 0;
+        const profit = revenue - cost;
+        return { id: emp.id, label: emp.name, hours: hrs, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+      });
+    const rentalExp = includeRental ? rentalExpensesForRange(rentalExpenses, rStart, rEnd) : { total: 0, byCategory: emptyByCC() };
+    const totalLaborCost = byEmployee.reduce((s, e) => s + e.cost, 0);
+    const totalCost = totalLaborCost + rentalExp.total;
+    const revenueByCC = emptyByCC();
+    byClient.forEach((c) => { Object.keys(revenueByCC).forEach((cc) => { revenueByCC[cc] += c.revenueByCostCenter?.[cc] || 0; }); });
+    employeeCosts.forEach((ec) => {
+      const emp = filteredEmployees.find((e) => e.id === ec.id);
+      ec.byCostCenter = employeeCostByCostCenter(emp, ec.cost, ec.entries, revenueByCC);
+    });
+    const costByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
+    costByDepartment.rental += rentalExp.total;
+    employeeCosts.forEach((ec) => { costByDepartment[ec.department] = (costByDepartment[ec.department] || 0) + ec.cost; });
+    const byCostCenter = [...COST_CENTERS, UNALLOCATED].map((cc) => {
+      const revenue = revenueByCC[cc] || 0;
+      const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0) + (cc === "rental" ? rentalExp.total : 0);
+      const hours = CATEGORIES.includes(cc) ? rangeEntries.filter((e) => !e.activity && e.category === cc).reduce((s, e) => s + e.hours, 0) : null;
+      const profit = revenue - cost;
+      return { key: cc, label: costCenterLabel(cc), hours, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+    });
+    const byDepartment = DEPARTMENTS.map((dep) => {
+      const rows = byCostCenter.filter((r) => dep.costCenters.includes(r.key));
+      const revenue = rows.reduce((s, r) => s + r.revenue, 0);
+      const cost = costByDepartment[dep.key] || 0;
+      const hours = employeeCosts.filter((ec) => ec.department === dep.key).reduce((s, ec) => s + ec.hours, 0);
+      const profit = revenue - cost;
+      return { key: dep.key, label: departmentLabel(dep.key), hours, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+    });
+    const totalHoursInPeriod = rangeEntries.reduce((s, e) => s + e.hours, 0);
+    const byActivity = ACTIVITIES.map((a) => ({ key: a, label: ACTIVITY_LABELS[a], hours: rangeEntries.filter((e) => e.activity === a).reduce((s, e) => s + e.hours, 0), revenue: 0, cost: 0, profit: null, margin: null }));
+    return { byClient, byEmployee, byCostCenter, byDepartment, byActivity, totalRevenue, totalCost, totalHoursInPeriod, unallocatedRevenue: revenueByCC[UNALLOCATED] || 0 };
+  }
+
+  const core = computeCore(rangeStart, rangeEnd);
+
+  // Build the row set for the chosen dimension. Month always splits the
+  // range into calendar months and reuses computeCore on each one.
+  let rows = [];
+  if (dimension === "client") rows = core.byClient;
+  else if (dimension === "employee") rows = core.byEmployee;
+  else if (dimension === "costCenter") rows = core.byCostCenter.filter((r) => r.key !== UNALLOCATED || r.revenue > 0.005 || r.cost > 0.005);
+  else if (dimension === "department") rows = core.byDepartment;
+  else if (dimension === "activity") rows = core.byActivity;
+  else if (dimension === "category") rows = core.byCostCenter.filter((r) => CATEGORIES.includes(r.key)).map((r) => ({ ...r, label: CATEGORY_LABELS[r.key] }));
+  else if (dimension === "month") {
+    const months = [];
+    for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+      const mStart = d > rangeStart ? d : rangeStart;
+      const mEnd = endOfMonth(d) < rangeEnd ? endOfMonth(d) : rangeEnd;
+      const c = computeCore(mStart, mEnd);
+      const hours = scopedEntries.filter((e) => { const dt = fromKey(e.date); return dt >= mStart && dt <= mEnd; }).reduce((s, e) => s + e.hours, 0);
+      const profit = c.totalRevenue - c.totalCost;
+      months.push({ key: toKey(d).slice(0, 7), label: d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }), hours, revenue: c.totalRevenue, cost: c.totalCost, profit, margin: c.totalRevenue > 0 ? (profit / c.totalRevenue) * 100 : null });
+    }
+    rows = months;
+  }
+
+  const availableMetrics = REPORT_METRICS_FOR[dimension];
+  const effectiveMetric = availableMetrics.includes(metric) ? metric : availableMetrics[0];
+  const unallocatedNote = ["client", "costCenter", "department", "month"].includes(dimension) && core.unallocatedRevenue > 0.005;
+
+  const sortedRows = [...rows].sort((a, b) => {
+    const av = a[effectiveMetric] ?? -Infinity, bv = b[effectiveMetric] ?? -Infinity;
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
+  const totalRow = dimension !== "month" && dimension !== "activity" ? {
+    key: "total", label: "Total", hours: rows.reduce((s, r) => s + (r.hours || 0), 0),
+    revenue: core.totalRevenue, cost: core.totalCost, profit: core.totalRevenue - core.totalCost,
+    margin: core.totalRevenue > 0 ? ((core.totalRevenue - core.totalCost) / core.totalRevenue) * 100 : null,
+  } : null;
+
+  const fmtMetric = (v, fmt) => {
+    if (v === null || v === undefined) return "—";
+    if (fmt === "eur") return fmtEur(v);
+    if (fmt === "pct") return v.toFixed(1) + "%";
+    return v.toFixed(2) + "h";
+  };
+  const metricDef = REPORT_METRICS.find((m) => m.key === effectiveMetric);
+  const chartData = sortedRows.slice(0, 20).map((r) => ({ name: r.label.length > 16 ? r.label.slice(0, 15) + "…" : r.label, [metricDef.label]: Number((r[effectiveMetric] || 0).toFixed(2)) }));
+
+  function exportReport() {
+    const cols = availableMetrics.map((mk) => REPORT_METRICS.find((m) => m.key === mk));
+    const dimLabel = REPORT_DIMENSIONS.find((d) => d.key === dimension).label;
+    exportToExcel(`report-${dimension}-${toKey(TODAY)}.xlsx`, [
+      { name: "Report", rows: [...sortedRows, ...(totalRow ? [totalRow] : [])].map((r) => ({
+        [dimLabel]: r.label,
+        ...Object.fromEntries(cols.map((c) => [`${c.label} (${c.format === "eur" ? "€" : c.format === "pct" ? "%" : "h"})`, r[c.key] === null || r[c.key] === undefined ? "" : Number(r[c.key].toFixed(2))])),
+      })) },
+    ]);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Reports" sub="Pick a dimension and a metric to build the table you need, from the whole database."
+        right={<Btn variant="secondary" onClick={exportReport}>Export to Excel</Btn>} />
+
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <Field label="Group by">
+            <select style={{ ...inputStyle, width: 220 }} value={dimension} onChange={(e) => setDimension(e.target.value)}>
+              {REPORT_DIMENSIONS.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Metric">
+            <select style={{ ...inputStyle, width: 160 }} value={effectiveMetric} onChange={(e) => setMetric(e.target.value)}>
+              {REPORT_METRICS.filter((m) => availableMetrics.includes(m.key)).map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Sort">
+            <select style={{ ...inputStyle, width: 130 }} value={sortDir} onChange={(e) => setSortDir(e.target.value)}>
+              <option value="desc">Highest first</option>
+              <option value="asc">Lowest first</option>
+            </select>
+          </Field>
+          <Field label="Chart">
+            <select style={{ ...inputStyle, width: 100 }} value={showChart ? "on" : "off"} onChange={(e) => setShowChart(e.target.value === "on")}>
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </Field>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ opacity: usingCustomRange ? 0.45 : 1, pointerEvents: usingCustomRange ? "none" : "auto" }}>
+            <PeriodSelector period={period} setPeriod={setPeriod} anchor={anchor} setAnchor={setAnchor} />
+          </div>
+          <Field label="Or custom range — from">
+            <input type="date" style={{ ...inputStyle, width: 150 }} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+          </Field>
+          <Field label="to">
+            <input type="date" style={{ ...inputStyle, width: 150 }} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+          </Field>
+          {usingCustomRange && <Btn variant="ghost" size="sm" onClick={() => { setCustomFrom(""); setCustomTo(""); }}>Clear custom range</Btn>}
+        </div>
+        {!validCustomRange && <div style={{ fontFamily: sans, fontSize: 12, color: C.danger, marginTop: 8 }}>"To" must be the same as or after "From".</div>}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", paddingTop: 12, marginTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <Field label="Client filter">
+            <select style={{ ...inputStyle, width: 190 }} value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}>
+              <option value="all">All clients</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Employee filter">
+            <select style={{ ...inputStyle, width: 190 }} value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
+              <option value="all">All employees</option>
+              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Department filter">
+            <select style={{ ...inputStyle, width: 190 }} value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)}>
+              <option value="all">All departments</option>
+              {DEPARTMENTS.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+            </select>
+          </Field>
+        </div>
+      </Panel>
+
+      {rows.length === 0 ? (
+        <EmptyState icon={SlidersHorizontal} title="No data for this combination" sub="Try a wider period or fewer filters." />
+      ) : (
+        <>
+          {showChart && (
+            <Panel style={{ marginBottom: 18 }}>
+              <div style={{ width: "100%", height: 260 }}>
+                <ResponsiveContainer>
+                  <BarChart data={chartData} margin={{ left: -10, right: 10 }}>
+                    <CartesianGrid stroke={C.border} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontFamily: sans, fontSize: 10.5, fill: C.inkMuted }} axisLine={{ stroke: C.border }} tickLine={false} interval={0} angle={sortedRows.length > 8 ? -30 : 0} textAnchor={sortedRows.length > 8 ? "end" : "middle"} height={sortedRows.length > 8 ? 55 : 30} />
+                    <YAxis tick={{ fontFamily: mono, fontSize: 11, fill: C.inkMuted }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ fontFamily: sans, fontSize: 12.5, borderRadius: 8, border: `1px solid ${C.border}` }} formatter={(v) => fmtMetric(v, metricDef.format)} />
+                    <Bar dataKey={metricDef.label} fill={C.accent} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Panel>
+          )}
+          <Panel>
+            {unallocatedNote && (
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.warn, marginBottom: 10 }}>
+                Some fixed fees have no cost-center split yet — their revenue ({fmtEur(core.unallocatedRevenue)}) is included in the total but not broken out below.
+              </div>
+            )}
+            <TableShell headers={[REPORT_DIMENSIONS.find((d) => d.key === dimension).label, ...availableMetrics.map((mk) => REPORT_METRICS.find((m) => m.key === mk).label)]}>
+              {sortedRows.map((r) => (
+                <tr key={r.key || r.id}>
+                  <Td>{r.label}</Td>
+                  {availableMetrics.map((mk) => {
+                    const v = r[mk];
+                    const fmt = REPORT_METRICS.find((m) => m.key === mk).format;
+                    const negative = (mk === "profit" || mk === "margin") && typeof v === "number" && v < 0;
+                    return <Td key={mk} mono style={{ color: negative ? C.danger : undefined, fontWeight: mk === effectiveMetric ? 700 : 400 }}>{fmtMetric(v, fmt)}</Td>;
+                  })}
+                </tr>
+              ))}
+              {totalRow && (
+                <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
+                  <Td>Total</Td>
+                  {availableMetrics.map((mk) => <Td key={mk} mono>{fmtMetric(totalRow[mk], REPORT_METRICS.find((m) => m.key === mk).format)}</Td>)}
+                </tr>
+              )}
+            </TableShell>
+          </Panel>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Root                                                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -3776,6 +4090,9 @@ export default function App() {
         )}
         {user.role === "admin" && view === "rental" && (
           <AdminRental properties={rentalProperties} expenses={rentalExpenses} refetchRental={refetchRental} />
+        )}
+        {user.role === "admin" && view === "reports" && (
+          <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
         )}
       </div>
     </div>
