@@ -2984,6 +2984,54 @@ function AdminClients({ clients, refetchClients, entries }) {
             <Field label="Client name">
               <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Acme Retail" />
             </Field>
+            {liveClient && (() => {
+              const clientEntries = entries.filter((e) => e.clientId === liveClient.id);
+              const [pStart, pEnd] = periodRange(viewPeriod, viewAnchor);
+              const inRange = (rStart, rEnd) => clientEntries.filter((e) => { const d = fromKey(e.date); return d >= rStart && d <= rEnd; });
+              const periodEntriesForClient = inRange(pStart, pEnd);
+              const periodRevenue = periodClientMetrics(liveClient, periodEntriesForClient, pStart, pEnd).revenue;
+              const periodHours = periodEntriesForClient.reduce((s, e) => s + e.hours, 0);
+              const yearStart = new Date(TODAY.getFullYear(), 0, 1);
+              const ytdEntries = inRange(yearStart, TODAY);
+              const ytdRevenue = periodClientMetrics(liveClient, ytdEntries, yearStart, TODAY).revenue;
+              const ytdHours = ytdEntries.reduce((s, e) => s + e.hours, 0);
+              const startKey = earliestHistoryDate(liveClient.feeHistory);
+              const firstEntryDate = clientEntries.reduce((min, e) => { const d = fromKey(e.date); return !min || d < min ? d : min; }, null);
+              const allStart = startKey ? fromKey(startKey) : (firstEntryDate || TODAY);
+              const allEndRaw = liveClient.endDate ? fromKey(liveClient.endDate) : TODAY;
+              const allEnd = allEndRaw < TODAY ? allEndRaw : TODAY;
+              const allEntries = inRange(allStart, allEnd);
+              const allRevenue = periodClientMetrics(liveClient, allEntries, allStart, allEnd).revenue;
+              const allHours = clientEntries.reduce((s, e) => s + e.hours, 0);
+              const rows = [
+                { label: periodLabel(viewPeriod, pStart, pEnd), hours: periodHours, revenue: periodRevenue },
+                { label: `Year to date (${TODAY.getFullYear()})`, hours: ytdHours, revenue: ytdRevenue },
+                { label: "All time", hours: allHours, revenue: allRevenue },
+              ];
+              return (
+                <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
+                  <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Summary</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ color: C.inkFaint, textAlign: "left" }}>
+                        <th style={{ fontWeight: 500, paddingBottom: 4 }}></th>
+                        <th style={{ fontWeight: 500, paddingBottom: 4, textAlign: "right" }}>Hours</th>
+                        <th style={{ fontWeight: 500, paddingBottom: 4, textAlign: "right" }}>Revenue</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => (
+                        <tr key={r.label}>
+                          <td style={{ padding: "2px 0", color: C.inkMuted }}>{r.label}</td>
+                          <td style={{ padding: "2px 0", fontFamily: mono, color: C.ink, textAlign: "right" }}>{r.hours.toFixed(2)}h</td>
+                          <td style={{ padding: "2px 0", fontFamily: mono, color: C.ink, textAlign: "right" }}>{fmtEur(r.revenue)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
             <div>
               <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Agreed monthly allocation, by category</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
