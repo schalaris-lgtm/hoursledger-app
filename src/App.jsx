@@ -1088,7 +1088,55 @@ function useTable(table, mapRow, orderColumn) {
   return [rows, refetch, loading];
 }
 
-const mapProfile = (r) => ({ id: r.id, name: r.name, email: r.email, title: r.title, role: r.role, weeklyHours: Number(r.weekly_hours), annualLeaveDays: Number(r.annual_leave_days), active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null, department: r.department || DEFAULT_DEPARTMENT });
+const mapProfile = (r) => ({ id: r.id, name: r.name, email: r.email, title: r.title, role: r.role, weeklyHours: Number(r.weekly_hours), annualLeaveDays: Number(r.annual_leave_days), active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null, department: r.department || DEFAULT_DEPARTMENT, endDate: r.end_date || null });
+// Same idea as clientBilledInRange: "active" only controls whether someone
+// can be picked for new work; whether their cost counts in a period depends
+// on when their cost history starts and, if they've left, their departure date.
+function employeeBilledInRange(e, rStart, rEnd) {
+  const start = earliestHistoryDate(e.costHistory);
+  if (start && fromKey(start) > rEnd) return false;
+  if (e.endDate && fromKey(e.endDate) < rStart) return false;
+  return true;
+}
+function clientBilledInRange(c, rStart, rEnd) {
+  const start = earliestHistoryDate(c.feeHistory);
+  if (start && fromKey(start) > rEnd) return false;
+  if (c.endDate && fromKey(c.endDate) < rStart) return false;
+  return true;
+}
+// Company-wide revenue/cost/hours for one arbitrary date range — the
+// minimal aggregate behind every growth/comparison figure (period-over-
+// period, YoY). Deliberately simpler than the dashboard's per-client and
+// per-employee breakdowns: it only needs the totals.
+function computePeriodTotals(clients, employees, entries, rentalExpenses, rStart, rEnd) {
+  const rangeEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= rStart && d <= rEnd; });
+  const revenue = clients.filter((c) => clientBilledInRange(c, rStart, rEnd))
+    .reduce((sum, c) => sum + periodClientMetrics(c, rangeEntries.filter((e) => e.clientId === c.id), rStart, rEnd).revenue, 0);
+  const laborCost = employees.filter((e) => employeeBilledInRange(e, rStart, rEnd))
+    .reduce((sum, e) => sum + periodEmployeeCost(e, rStart, rEnd), 0);
+  const cost = laborCost + rentalExpensesForRange(rentalExpenses, rStart, rEnd).total;
+  const hours = rangeEntries.reduce((s, e) => s + e.hours, 0);
+  const profit = revenue - cost;
+  return { revenue, cost, profit, hours, margin: revenue > 0 ? (profit / revenue) * 100 : null };
+}
+// Percentage change from a base value — null when there's no base to
+// compare against (so the UI can show "—" instead of a misleading number).
+function pctChange(current, previous) {
+  if (previous === null || previous === undefined || Math.abs(previous) < 0.005) return null;
+  return ((current - previous) / Math.abs(previous)) * 100;
+}
+// The immediately preceding period of the same length, and the same
+// calendar period one year earlier — used for period-over-period and YoY
+// comparisons. Both are computed from the period's own start/end so they
+// stay correct across week/month/quarter/year and custom ranges alike.
+function comparisonRanges(rangeStart, rangeEnd) {
+  const spanDays = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
+  const prevEnd = addDays(rangeStart, -1);
+  const prevStart = addDays(prevEnd, -(spanDays - 1));
+  const yoyStart = new Date(rangeStart.getFullYear() - 1, rangeStart.getMonth(), rangeStart.getDate());
+  const yoyEnd = new Date(rangeEnd.getFullYear() - 1, rangeEnd.getMonth(), rangeEnd.getDate());
+  return { prevStart, prevEnd, yoyStart, yoyEnd };
+}
 const mapCostHistory = (r) => ({ id: r.id, employeeId: r.employee_id, effectiveDate: r.effective_date, grossSalary: Number(r.gross_salary), socialSecurity: Number(r.social_security), ticketRestaurant: Number(r.ticket_restaurant), insurance: Number(r.insurance), otherCost: Number(r.other_cost) });
 const mapClientRow = (r) => ({ id: r.id, name: r.name, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee), endDate: r.end_date || null, active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null });
 const mapFeeHistory = (r) => ({
@@ -1745,7 +1793,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
-    statCards: true, allocationChart: true, revenueCostChart: true,
+    statCards: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
@@ -1765,7 +1813,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // Each employee's own hours and labor cost for the period, computed
   // once and reused below both to attribute cost to clients and to show
   // per-employee profitability.
-  const employeeCosts = employees.filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rangeEnd))).map((emp) => {
+  const employeeCosts = employees.filter((e) => employeeBilledInRange(e, rangeStart, rangeEnd)).map((emp) => {
     const empEntries = rangeEntries.filter((e) => e.employeeId === emp.id);
     return {
       id: emp.id,
@@ -1781,12 +1829,6 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // any period that overlaps when they were actually billed — governed by
   // their fee history start and their end date, not the active toggle —
   // so deactivating a client never erases its revenue from past periods.
-  const clientBilledInRange = (c, rStart, rEnd) => {
-    const start = earliestHistoryDate(c.feeHistory);
-    if (start && fromKey(start) > rEnd) return false;
-    if (c.endDate && fromKey(c.endDate) < rStart) return false;
-    return true;
-  };
   const byClient = clients.filter((c) => clientBilledInRange(c, rangeStart, rangeEnd)).map((c) => {
     const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
     const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
@@ -1811,7 +1853,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // Attribute each client's revenue to employees proportionally to the
   // hours they logged for that client — a simple productivity signal,
   // not a payroll or commission calculation.
-  const byEmployee = employees.filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rangeEnd))).map((emp) => {
+  const byEmployee = employees.filter((e) => employeeBilledInRange(e, rangeStart, rangeEnd)).map((emp) => {
     const hrs = rangeEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
     const clientsTouched = new Set(rangeEntries.filter((e) => e.employeeId === emp.id && e.clientId).map((e) => e.clientId)).size;
     const nonChargeableHrs = rangeEntries.filter((e) => e.employeeId === emp.id && e.activity).reduce((s, e) => s + e.hours, 0);
@@ -1923,7 +1965,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     const d = new Date(anchor.getFullYear(), anchor.getMonth() - (5 - i), 1);
     return { label: d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }), start: startOfMonth(d), end: endOfMonth(d) };
   });
-  const employeeMonthlyHours = employees.filter((e) => e.active).map((emp) => ({
+  const employeeMonthlyHours = employees.filter((e) => employeeBilledInRange(e, trendMonths[0].start, trendMonths[trendMonths.length - 1].end)).map((emp) => ({
     ...emp,
     months: trendMonths.map((m) => entries.filter((e) => e.employeeId === emp.id && fromKey(e.date) >= m.start && fromKey(e.date) <= m.end).reduce((s, e) => s + e.hours, 0)),
   }));
@@ -1934,7 +1976,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     const start = addDays(startOfWeek(anchor), (i - 7) * 7);
     return { label: fmtShort(start), start, end: addDays(start, 6) };
   });
-  const employeeWeeklyHours = employees.filter((e) => e.active).map((emp) => ({
+  const employeeWeeklyHours = employees.filter((e) => employeeBilledInRange(e, trendWeeks[0].start, trendWeeks[trendWeeks.length - 1].end)).map((emp) => ({
     ...emp,
     weeks: trendWeeks.map((w) => entries.filter((e) => e.employeeId === emp.id && fromKey(e.date) >= w.start && fromKey(e.date) <= w.end).reduce((s, e) => s + e.hours, 0)),
   }));
@@ -1960,7 +2002,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     }).length;
     const monthEntries = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
     const revenue = clients.filter((c) => clientBilledInRange(c, m.start, m.end)).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
-    const cost = employees.filter((e) => e.active).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
+    const cost = employees.filter((e) => employeeBilledInRange(e, m.start, m.end)).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
       + rentalExpensesForRange(rentalExpenses, m.start, m.end).total;
     return { label: m.label, newClients, revenue, cost, profit: revenue - cost };
   });
@@ -2013,11 +2055,28 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         Month: m.label, "New clients": m.newClients, "Revenue (€)": Number(m.revenue.toFixed(2)),
         "Cost (€)": Number(m.cost.toFixed(2)), "Profit (€)": Number(m.profit.toFixed(2)),
       })) },
+      { name: "Growth", rows: growthRows.map((r) => ({
+        Metric: r.label, "This period": Number(r.value.toFixed(2)), "Previous period": Number(prevTotals[r.key].toFixed(2)),
+        "vs. previous (%)": r.vsPrev !== null ? Number(r.vsPrev.toFixed(1)) : "", "Same period last year": Number(yoyTotals[r.key].toFixed(2)),
+        "YoY growth (%)": r.vsYoy !== null ? Number(r.vsYoy.toFixed(1)) : "",
+      })) },
     ]);
   }
 
+  // Growth: this period vs. the immediately preceding one of the same
+  // length, and vs. the same calendar period a year earlier (YoY).
+  const { prevStart, prevEnd, yoyStart, yoyEnd } = comparisonRanges(rangeStart, rangeEnd);
+  const prevTotals = computePeriodTotals(clients, employees, entries, rentalExpenses, prevStart, prevEnd);
+  const yoyTotals = computePeriodTotals(clients, employees, entries, rentalExpenses, yoyStart, yoyEnd);
+  const growthRows = [
+    { key: "revenue", label: "Revenue", value: totalRevenue, fmt: fmtEur },
+    { key: "cost", label: "Cost", value: totalCost, fmt: fmtEur },
+    { key: "profit", label: "Profit", value: totalProfit, fmt: fmtEur },
+    { key: "hours", label: "Hours", value: totalHours, fmt: (v) => v.toFixed(2) + "h" },
+  ].map((r) => ({ ...r, vsPrev: pctChange(r.value, prevTotals[r.key]), vsYoy: pctChange(r.value, yoyTotals[r.key]) }));
+
   const CONFIG_LABELS = {
-    statCards: "Summary cards", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
+    statCards: "Summary cards", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
     byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
@@ -2065,6 +2124,31 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           <StatCard label="Overall margin" value={overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"} accent={overallMargin !== null && overallMargin < 0 ? C.danger : C.accent} sub="(Revenue − cost) ÷ revenue" />
           <StatCard label="Avg. effective rate" value={fmtEur(avgEffectiveRate) + "/h"} sub="Revenue ÷ hours worked" />
         </div>
+      )}
+
+      {config.growthPanel && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Growth</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+            This period ({fmtShort(rangeStart)} – {fmtShort(rangeEnd)}) vs. the previous period of the same length ({fmtShort(prevStart)} – {fmtShort(prevEnd)}) and the same period a year earlier ({fmtShort(yoyStart)} – {fmtShort(yoyEnd)}).
+          </div>
+          <TableShell headers={["Metric", "This period", "Previous period", "vs. previous", "Same period last year", "YoY growth"]}>
+            {growthRows.map((r) => {
+              const growthTone = (v) => v === null ? undefined : v < 0 ? C.danger : v > 0 ? C.accentDark : C.inkMuted;
+              const growthText = (v) => v === null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+              return (
+                <tr key={r.key}>
+                  <Td>{r.label}</Td>
+                  <Td mono style={{ fontWeight: 700 }}>{r.fmt(r.value)}</Td>
+                  <Td mono style={{ color: C.inkMuted }}>{r.fmt(prevTotals[r.key])}</Td>
+                  <Td mono style={{ color: growthTone(r.vsPrev), fontWeight: 700 }}>{growthText(r.vsPrev)}</Td>
+                  <Td mono style={{ color: C.inkMuted }}>{r.fmt(yoyTotals[r.key])}</Td>
+                  <Td mono style={{ color: growthTone(r.vsYoy), fontWeight: 700 }}>{growthText(r.vsYoy)}</Td>
+                </tr>
+              );
+            })}
+          </TableShell>
+        </Panel>
       )}
 
       {config.allocationChart && (
@@ -2441,7 +2525,7 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const total = rows.reduce((s, e) => s + e.hours, 0);
 
   const weekEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= weekStart && d <= weekEnd; });
-  const compliance = employees.filter((e) => e.active).map((e) => {
+  const compliance = employees.filter((e) => employeeBilledInRange(e, weekStart, weekEnd)).map((e) => {
     const target = e.weeklyHours || 40;
     const logged = weekEntries.filter((t) => t.employeeId === e.id).reduce((s, t) => s + t.hours, 0);
     const diff = logged - target;
@@ -3122,6 +3206,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
   const [weeklyHours, setWeeklyHours] = useState("40");
   const [annualLeaveDays, setAnnualLeaveDays] = useState("25");
   const [department, setDepartment] = useState(DEFAULT_DEPARTMENT);
+  const [endDate, setEndDate] = useState("");
   const [grossSalary, setGrossSalary] = useState("");
   const [socialSecurity, setSocialSecurity] = useState("");
   const [ticketRestaurant, setTicketRestaurant] = useState("");
@@ -3146,6 +3231,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
     setModal(e); setName(e.name); setTitle(e.title || ""); setRole(e.role);
     setWeeklyHours(String(e.weeklyHours || 40)); setAnnualLeaveDays(String(e.annualLeaveDays || 25));
     setDepartment(e.department || DEFAULT_DEPARTMENT);
+    setEndDate(e.endDate || "");
     resetCostFields(e);
   }
 
@@ -3163,7 +3249,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
     const { error: profileError } = await supabase.from("profiles").update({
       name: name.trim(), title: title.trim() || null, role,
       weekly_hours: hrs, annual_leave_days: leaveDays,
-      department,
+      department, end_date: endDate || null,
     }).eq("id", modal.id);
     if (profileError) {
       window.alert(`Couldn't update employee: ${profileError.message}`);
@@ -3238,7 +3324,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
               "Contracted h/wk": e.weeklyHours || 40, "Annual leave (d/yr)": e.annualLeaveDays || 25,
               "Gross salary": e.grossSalary || 0, "Social security": e.socialSecurity || 0,
               "Ticket restaurant": e.ticketRestaurant || 0, "Other insurance": e.insurance || 0, "Other cost": e.otherCost || 0,
-              Department: departmentLabel(e.department || DEFAULT_DEPARTMENT),
+              Department: departmentLabel(e.department || DEFAULT_DEPARTMENT), "Departure date": e.endDate || "",
             })),
           }])}>Export to Excel</Btn>
         } />
@@ -3249,7 +3335,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
         <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
       </Panel>
       <Panel>
-        <TableShell headers={["Name", "Title", "Email", "Role", "Department", "Contracted /wk", "Leave/yr", "Hours", "Cost /mo", "Cost /h", "Status", ""]}>
+        <TableShell headers={["Name", "Title", "Email", "Role", "Department", "Departed", "Contracted /wk", "Leave/yr", "Hours", "Cost /mo", "Cost /h", "Status", ""]}>
           {employees.map((e) => {
             const hrs = periodEntries.filter((t) => t.employeeId === e.id).reduce((s, t) => s + t.hours, 0);
             const costThenMonthly = monthlyLaborCostAsOf(e, toKey(viewRangeStart));
@@ -3261,6 +3347,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
                 <Td>{e.email}</Td>
                 <Td><Badge tone={e.role === "admin" ? "accent" : "neutral"}>{e.role === "admin" ? "Manager" : "Employee"}</Badge></Td>
                 <Td>{departmentLabel(e.department || DEFAULT_DEPARTMENT)}</Td>
+                <Td mono style={{ color: e.endDate ? C.warn : undefined }}>{e.endDate || "—"}</Td>
                 <Td mono>{e.weeklyHours || 40}h</Td>
                 <Td mono>{e.annualLeaveDays || 25}d</Td>
                 <Td mono>{hrs.toFixed(2) + "h"}</Td>
@@ -3310,6 +3397,12 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
             </Field>
             <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, lineHeight: 1.5, marginTop: -4 }}>
               Accounting Team cost is spread across Accounting / Tax / Payroll / Other by the hours logged each period. Management Team cost is split between Director and Finance in proportion to that period's Director/Finance fees. Rental goes entirely to the Rental cost center.
+            </div>
+            <Field label="Departure date (optional) — leave empty while still with the firm">
+              <input type="date" style={inputStyle} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </Field>
+            <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, lineHeight: 1.5, marginTop: -4 }}>
+              Reports and the dashboard keep this person's cost in every period up to and including their departure date, whether or not they're marked Active. Active/Inactive only controls whether they can still be assigned new work.
             </div>
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, marginTop: 2 }}>
               <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 10 }}>Record a new labor cost change</div>
@@ -3741,6 +3834,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [sortDir, setSortDir] = useState("desc");
   const [showChart, setShowChart] = useState(true);
+  const [compareTo, setCompareTo] = useState("none"); // "none" | "previous" | "yoy" — ignored for the Month dimension, which always shows YoY per row
 
   const usingCustomRange = !!(customFrom && customTo);
   const [presetStart, presetEnd] = periodRange(period, anchor);
@@ -3767,7 +3861,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
   function computeCore(rStart, rEnd) {
     const rangeEntries = scopedEntries.filter((e) => { const d = fromKey(e.date); return d >= rStart && d <= rEnd; });
     const employeeCosts = filteredEmployees
-      .filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rEnd)))
+      .filter((e) => employeeBilledInRange(e, rStart, rEnd))
       .map((emp) => {
         const empEntries = rangeEntries.filter((e) => e.employeeId === emp.id);
         return { id: emp.id, department: emp.department || DEFAULT_DEPARTMENT, entries: empEntries, hours: empEntries.reduce((s, e) => s + e.hours, 0), cost: periodEmployeeCost(emp, rStart, rEnd) };
@@ -3793,7 +3887,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
       });
     const totalRevenue = byClient.reduce((s, c) => s + c.revenue, 0);
     const byEmployee = filteredEmployees
-      .filter((e) => e.active && (!earliestHistoryDate(e.costHistory) || earliestHistoryDate(e.costHistory) <= toKey(rEnd)))
+      .filter((e) => employeeBilledInRange(e, rStart, rEnd))
       .map((emp) => {
         const hrs = rangeEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
         const revenue = byClient.reduce((sum, c) => {
@@ -3837,32 +3931,63 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
     return { byClient, byEmployee, byCostCenter, byDepartment, byActivity, totalRevenue, totalCost, totalHoursInPeriod, unallocatedRevenue: revenueByCC[UNALLOCATED] || 0 };
   }
 
-  const core = computeCore(rangeStart, rangeEnd);
-
-  // Build the row set for the chosen dimension. Month always splits the
-  // range into calendar months and reuses computeCore on each one.
-  let rows = [];
-  if (dimension === "client") rows = core.byClient;
-  else if (dimension === "employee") rows = core.byEmployee;
-  else if (dimension === "costCenter") rows = core.byCostCenter.filter((r) => r.key !== UNALLOCATED || r.revenue > 0.005 || r.cost > 0.005);
-  else if (dimension === "department") rows = core.byDepartment;
-  else if (dimension === "activity") rows = core.byActivity;
-  else if (dimension === "category") rows = core.byCostCenter.filter((r) => CATEGORIES.includes(r.key)).map((r) => ({ ...r, label: CATEGORY_LABELS[r.key] }));
-  else if (dimension === "month") {
-    const months = [];
-    for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
-      const mStart = d > rangeStart ? d : rangeStart;
-      const mEnd = endOfMonth(d) < rangeEnd ? endOfMonth(d) : rangeEnd;
-      const c = computeCore(mStart, mEnd);
-      const hours = scopedEntries.filter((e) => { const dt = fromKey(e.date); return dt >= mStart && dt <= mEnd; }).reduce((s, e) => s + e.hours, 0);
-      const profit = c.totalRevenue - c.totalCost;
-      months.push({ key: toKey(d).slice(0, 7), label: d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }), hours, revenue: c.totalRevenue, cost: c.totalCost, profit, margin: c.totalRevenue > 0 ? (profit / c.totalRevenue) * 100 : null });
+  // Build the row set for the chosen dimension, for an arbitrary range —
+  // called once for the period on screen, and again (same dimension, a
+  // shifted range) whenever a comparison is requested, so the two row sets
+  // line up row-for-row by key.
+  function buildRows(dim, rStart, rEnd) {
+    const c = computeCore(rStart, rEnd);
+    if (dim === "client") return c.byClient;
+    if (dim === "employee") return c.byEmployee;
+    if (dim === "costCenter") return c.byCostCenter.filter((r) => r.key !== UNALLOCATED || r.revenue > 0.005 || r.cost > 0.005);
+    if (dim === "department") return c.byDepartment;
+    if (dim === "activity") return c.byActivity;
+    if (dim === "category") return c.byCostCenter.filter((r) => CATEGORIES.includes(r.key)).map((r) => ({ ...r, label: CATEGORY_LABELS[r.key] }));
+    if (dim === "month") {
+      const months = [];
+      for (let d = startOfMonth(rStart); d <= rEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+        const mStart = d > rStart ? d : rStart;
+        const mEnd = endOfMonth(d) < rEnd ? endOfMonth(d) : rEnd;
+        const mc = computeCore(mStart, mEnd);
+        const hours = scopedEntries.filter((e) => { const dt = fromKey(e.date); return dt >= mStart && dt <= mEnd; }).reduce((s, e) => s + e.hours, 0);
+        const profit = mc.totalRevenue - mc.totalCost;
+        months.push({ key: toKey(d).slice(0, 7), label: d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }), hours, revenue: mc.totalRevenue, cost: mc.totalCost, profit, margin: mc.totalRevenue > 0 ? (profit / mc.totalRevenue) * 100 : null });
+      }
+      return months;
     }
-    rows = months;
+    return [];
   }
-
+  const core = computeCore(rangeStart, rangeEnd);
+  let rows = buildRows(dimension, rangeStart, rangeEnd);
   const availableMetrics = REPORT_METRICS_FOR[dimension];
   const effectiveMetric = availableMetrics.includes(metric) ? metric : availableMetrics[0];
+
+  // Growth: compare every row to the same dimension over the previous
+  // period of equal length, or the same period a year ago. Month rows are
+  // always compared to the same calendar month last year, regardless of
+  // this toggle, since each row is already its own period.
+  const { prevStart: cmpPrevStart, prevEnd: cmpPrevEnd, yoyStart: cmpYoyStart, yoyEnd: cmpYoyEnd } = comparisonRanges(rangeStart, rangeEnd);
+  const rowKey = (r) => r.key ?? r.id;
+  if (dimension === "month") {
+    rows = rows.map((r) => {
+      const d = fromKey(r.key + "-01");
+      const yStart = new Date(d.getFullYear() - 1, d.getMonth(), 1);
+      const yEnd = endOfMonth(yStart);
+      const yc = computeCore(yStart, yEnd);
+      const yoyVal = effectiveMetric === "hours" ? scopedEntries.filter((e) => { const dt = fromKey(e.date); return dt >= yStart && dt <= yEnd; }).reduce((s, e) => s + e.hours, 0) : (effectiveMetric === "cost" ? yc.totalCost : effectiveMetric === "profit" ? yc.totalRevenue - yc.totalCost : effectiveMetric === "margin" ? (yc.totalRevenue > 0 ? ((yc.totalRevenue - yc.totalCost) / yc.totalRevenue) * 100 : null) : yc.totalRevenue);
+      return { ...r, compareValue: yoyVal, growthPct: pctChange(r[effectiveMetric], yoyVal) };
+    });
+  } else if (compareTo !== "none") {
+    const [cStart, cEnd] = compareTo === "previous" ? [cmpPrevStart, cmpPrevEnd] : [cmpYoyStart, cmpYoyEnd];
+    const cmpRows = buildRows(dimension, cStart, cEnd);
+    const byKey = Object.fromEntries(cmpRows.map((r) => [rowKey(r), r]));
+    rows = rows.map((r) => {
+      const match = byKey[rowKey(r)];
+      const compareValue = match ? match[effectiveMetric] : (dimension === "client" || dimension === "employee" ? 0 : null);
+      return { ...r, compareValue, growthPct: compareValue !== null && compareValue !== undefined ? pctChange(r[effectiveMetric], compareValue) : null };
+    });
+  }
+
   const unallocatedNote = ["client", "costCenter", "department", "month"].includes(dimension) && core.unallocatedRevenue > 0.005;
 
   const sortedRows = [...rows].sort((a, b) => {
@@ -3881,6 +4006,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
     if (fmt === "pct") return v.toFixed(1) + "%";
     return v.toFixed(2) + "h";
   };
+  const showGrowthColumn = dimension === "month" || compareTo !== "none";
   const metricDef = REPORT_METRICS.find((m) => m.key === effectiveMetric);
   const chartData = sortedRows.slice(0, 20).map((r) => ({ name: r.label.length > 16 ? r.label.slice(0, 15) + "…" : r.label, [metricDef.label]: Number((r[effectiveMetric] || 0).toFixed(2)) }));
 
@@ -3891,6 +4017,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
       { name: "Report", rows: [...sortedRows, ...(totalRow ? [totalRow] : [])].map((r) => ({
         [dimLabel]: r.label,
         ...Object.fromEntries(cols.map((c) => [`${c.label} (${c.format === "eur" ? "€" : c.format === "pct" ? "%" : "h"})`, r[c.key] === null || r[c.key] === undefined ? "" : Number(r[c.key].toFixed(2))])),
+        ...(showGrowthColumn ? { [`Compare (${metricDef.label})`]: r.compareValue === null || r.compareValue === undefined ? "" : Number(r.compareValue.toFixed(2)), "Growth (%)": r.growthPct === null || r.growthPct === undefined ? "" : Number(r.growthPct.toFixed(1)) } : {}),
       })) },
     ]);
   }
@@ -3923,6 +4050,17 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
               <option value="on">Show</option>
               <option value="off">Hide</option>
             </select>
+          </Field>
+          <Field label={dimension === "month" ? "Growth (per row)" : "Compare to"}>
+            {dimension === "month" ? (
+              <div style={{ ...inputStyle, width: 210, color: C.inkMuted, background: C.surfaceMuted || C.surface }}>Same month, last year</div>
+            ) : (
+              <select style={{ ...inputStyle, width: 210 }} value={compareTo} onChange={(e) => setCompareTo(e.target.value)}>
+                <option value="none">No comparison</option>
+                <option value="previous">Previous period (same length)</option>
+                <option value="yoy">Same period, last year</option>
+              </select>
+            )}
           </Field>
         </div>
 
@@ -3987,7 +4125,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
                 Some fixed fees have no cost-center split yet — their revenue ({fmtEur(core.unallocatedRevenue)}) is included in the total but not broken out below.
               </div>
             )}
-            <TableShell headers={[REPORT_DIMENSIONS.find((d) => d.key === dimension).label, ...availableMetrics.map((mk) => REPORT_METRICS.find((m) => m.key === mk).label)]}>
+            <TableShell headers={[REPORT_DIMENSIONS.find((d) => d.key === dimension).label, ...availableMetrics.map((mk) => REPORT_METRICS.find((m) => m.key === mk).label), ...(showGrowthColumn ? [dimension === "month" ? `${metricDef.label}, same month last year` : `${metricDef.label}, ${compareTo === "yoy" ? "same period last year" : "previous period"}`, "Growth"] : [])]}>
               {sortedRows.map((r) => (
                 <tr key={r.key || r.id}>
                   <Td>{r.label}</Td>
@@ -3997,12 +4135,21 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
                     const negative = (mk === "profit" || mk === "margin") && typeof v === "number" && v < 0;
                     return <Td key={mk} mono style={{ color: negative ? C.danger : undefined, fontWeight: mk === effectiveMetric ? 700 : 400 }}>{fmtMetric(v, fmt)}</Td>;
                   })}
+                  {showGrowthColumn && (
+                    <>
+                      <Td mono style={{ color: C.inkMuted }}>{fmtMetric(r.compareValue, metricDef.format)}</Td>
+                      <Td mono style={{ color: r.growthPct === null ? undefined : r.growthPct < 0 ? C.danger : C.accentDark, fontWeight: 700 }}>
+                        {r.growthPct === null ? "—" : `${r.growthPct > 0 ? "+" : ""}${r.growthPct.toFixed(1)}%`}
+                      </Td>
+                    </>
+                  )}
                 </tr>
               ))}
               {totalRow && (
                 <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
                   <Td>Total</Td>
                   {availableMetrics.map((mk) => <Td key={mk} mono>{fmtMetric(totalRow[mk], REPORT_METRICS.find((m) => m.key === mk).format)}</Td>)}
+                  {showGrowthColumn && <><Td /><Td /></>}
                 </tr>
               )}
             </TableShell>
