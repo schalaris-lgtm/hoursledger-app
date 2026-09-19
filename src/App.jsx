@@ -2951,6 +2951,30 @@ function AdminClients({ clients, refetchClients, entries }) {
               </tr>
             );
           })}
+          {(() => {
+            // Totals across every client currently listed (respects the
+            // search box), for this reporting period.
+            let totalHrs = 0, totalRevenue = 0, totalExtra = 0, totalFixedFee = 0;
+            filtered.forEach((c) => {
+              const clientPeriodEntries = periodEntries.filter((e) => e.clientId === c.id);
+              totalHrs += clientPeriodEntries.reduce((s, e) => s + e.hours, 0);
+              totalRevenue += periodClientMetrics(c, clientPeriodEntries, viewRangeStart, viewRangeEnd).revenue;
+              totalExtra += extraFeesAccruedForRange(c, viewRangeStart, viewRangeEnd);
+              const feeThen = feeAsOf(c, toKey(viewRangeStart));
+              if (feeThen.fixedFee && (!c.endDate || c.endDate > toKey(viewRangeStart))) totalFixedFee += feeThen.fixedFee;
+            });
+            return (
+              <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
+                <Td>Total ({filtered.length} client{filtered.length === 1 ? "" : "s"})</Td>
+                <Td mono>{totalHrs.toFixed(2)}h</Td>
+                <Td mono>{fmtEur(totalRevenue)}</Td>
+                <Td />
+                <Td mono>{fmtEur(totalFixedFee)}/mo</Td>
+                <Td mono>{fmtEur(totalExtra)}</Td>
+                <Td /><Td />
+              </tr>
+            );
+          })()}
         </TableShell>
       </Panel>
 
