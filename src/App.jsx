@@ -1776,7 +1776,18 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     };
   });
 
-  const byClient = clients.filter((c) => c.active && (!earliestHistoryDate(c.feeHistory) || earliestHistoryDate(c.feeHistory) <= toKey(rangeEnd))).map((c) => {
+  // Active/inactive only controls whether a client can be picked for NEW
+  // work (timesheet dropdown, new fees). For reporting, a client counts in
+  // any period that overlaps when they were actually billed — governed by
+  // their fee history start and their end date, not the active toggle —
+  // so deactivating a client never erases its revenue from past periods.
+  const clientBilledInRange = (c, rStart, rEnd) => {
+    const start = earliestHistoryDate(c.feeHistory);
+    if (start && fromKey(start) > rEnd) return false;
+    if (c.endDate && fromKey(c.endDate) < rStart) return false;
+    return true;
+  };
+  const byClient = clients.filter((c) => clientBilledInRange(c, rangeStart, rangeEnd)).map((c) => {
     const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
     const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
     const { revenue, allocation, revenueByCostCenter } = periodClientMetrics(c, clientEntries, rangeStart, rangeEnd);
@@ -1928,7 +1939,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     weeks: trendWeeks.map((w) => entries.filter((e) => e.employeeId === emp.id && fromKey(e.date) >= w.start && fromKey(e.date) <= w.end).reduce((s, e) => s + e.hours, 0)),
   }));
 
-  const clientMonthly = clients.filter((c) => c.active).map((c) => {
+  const clientMonthly = clients.filter((c) => clientBilledInRange(c, trendMonths[0].start, trendMonths[trendMonths.length - 1].end)).map((c) => {
     const months = trendMonths.map((m) => {
       const monthEntries = entries.filter((e) => e.clientId === c.id && fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
       const hrs = monthEntries.reduce((s, e) => s + e.hours, 0);
@@ -1948,7 +1959,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
       return d >= m.start && d <= m.end;
     }).length;
     const monthEntries = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
-    const revenue = clients.filter((c) => c.active).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
+    const revenue = clients.filter((c) => clientBilledInRange(c, m.start, m.end)).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
     const cost = employees.filter((e) => e.active).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
       + rentalExpensesForRange(rentalExpenses, m.start, m.end).total;
     return { label: m.label, newClients, revenue, cost, profit: revenue - cost };
@@ -2393,6 +2404,7 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const [weekStart, setWeekStart] = useState(startOfWeek(TODAY));
   const [empFilter, setEmpFilter] = useState("all");
   const [clientFilter, setClientFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("date_asc");
   const [editingId, setEditingId] = useState(null);
   const [editHours, setEditHours] = useState("");
   const [editNote, setEditNote] = useState("");
@@ -2400,11 +2412,17 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const weekEnd = addDays(weekStart, 6);
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
 
+  const SORTERS = {
+    date_asc: (a, b) => a.date.localeCompare(b.date) || empName(a.employeeId).localeCompare(empName(b.employeeId)),
+    date_desc: (a, b) => b.date.localeCompare(a.date) || empName(a.employeeId).localeCompare(empName(b.employeeId)),
+    employee: (a, b) => empName(a.employeeId).localeCompare(empName(b.employeeId)) || a.date.localeCompare(b.date),
+    hours_desc: (a, b) => b.hours - a.hours || a.date.localeCompare(b.date),
+  };
   const rows = entries
     .filter((e) => { const d = fromKey(e.date); return d >= weekStart && d <= weekEnd; })
     .filter((e) => empFilter === "all" || e.employeeId === empFilter)
     .filter((e) => clientFilter === "all" || (clientFilter === "internal" ? !!e.activity : e.clientId === clientFilter))
-    .sort((a, b) => a.date.localeCompare(b.date) || empName(a.employeeId).localeCompare(empName(b.employeeId)));
+    .sort(SORTERS[sortBy] || SORTERS.date_asc);
 
   async function saveEdit(id) {
     const val = Number(editHours);
@@ -2474,6 +2492,14 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
               <option value="all">All clients &amp; activities</option>
               <option value="internal">Internal — non-chargeable only</option>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Sort by">
+            <select style={{ ...inputStyle, width: 170 }} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+              <option value="date_asc">Day (earliest first)</option>
+              <option value="date_desc">Day (latest first)</option>
+              <option value="employee">Employee name</option>
+              <option value="hours_desc">Hours (most first)</option>
             </select>
           </Field>
         </div>
@@ -3747,7 +3773,12 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
         return { id: emp.id, department: emp.department || DEFAULT_DEPARTMENT, entries: empEntries, hours: empEntries.reduce((s, e) => s + e.hours, 0), cost: periodEmployeeCost(emp, rStart, rEnd) };
       });
     const byClient = filteredClients
-      .filter((c) => c.active && (!earliestHistoryDate(c.feeHistory) || earliestHistoryDate(c.feeHistory) <= toKey(rEnd)))
+      .filter((c) => {
+        const start = earliestHistoryDate(c.feeHistory);
+        if (start && fromKey(start) > rEnd) return false;
+        if (c.endDate && fromKey(c.endDate) < rStart) return false;
+        return true;
+      })
       .map((c) => {
         const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
         const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
