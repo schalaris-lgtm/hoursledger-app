@@ -859,7 +859,7 @@ function UpdatePasswordScreen({ onDone }) {
           {done ? (
             <>
               <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 15, color: C.ink }}>Password updated</div>
-              <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>You can continue into HoursLedger now.</div>
+              <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>You can continue into GLORIA now.</div>
               <Btn onClick={onDone}>Continue</Btn>
             </>
           ) : (
@@ -4003,7 +4003,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
     refetchEmployees();
   }
   async function deleteEmployee(e) {
-    if (!window.confirm(`Permanently delete "${e.name}"? This removes their HoursLedger record but does not revoke their login — this cannot be undone.`)) return;
+    if (!window.confirm(`Permanently delete "${e.name}"? This removes their GLORIA record but does not revoke their login — this cannot be undone.`)) return;
     const { error } = await supabase.from("profiles").delete().eq("id", e.id);
     if (error) {
       if (error.code === "23503") {
@@ -7204,6 +7204,18 @@ function CompliancePage({ user, clients, employees, amlRecords, cases, requests,
 /* ---------------------------------------------------------------------- */
 
 export default function App() {
+  // Browser tab: title and favicon (the ACCO logo embedded above), so the
+  // logo shows in the tab without depending on index.html.
+  useEffect(() => {
+    document.title = "GLORIA";
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    link.type = "image/png";
+    link.href = LOGO_DATA_URI;
+    let apple = document.querySelector("link[rel='apple-touch-icon']");
+    if (!apple) { apple = document.createElement("link"); apple.rel = "apple-touch-icon"; document.head.appendChild(apple); }
+    apple.href = LOGO_DATA_URI;
+  }, []);
   const [session, setSession] = useState(undefined);
   const [view, setView] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
