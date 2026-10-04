@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, Users, Building2, Clock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, LogOut, X, Lock, Unlock, AlertTriangle,
-  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home, SlidersHorizontal, Receipt, Wallet
+  Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home, SlidersHorizontal, Receipt, Wallet,
+  ListChecks, MessageSquare, ArrowLeft, Phone, Mail, UserRound
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend
@@ -981,6 +982,7 @@ function Td({ children, mono: isMono, right, style, title }) {
 
 function Sidebar({ user, view, setView }) {
   const employeeNav = [
+    { key: "mytasks", label: "My Tasks", icon: ListChecks },
     { key: "timesheet", label: "My Timesheet", icon: Clock },
     { key: "timeoff", label: "Time Off", icon: CalendarDays },
     { key: "calendar", label: "Calendar", icon: CalendarRange },
@@ -993,6 +995,7 @@ function Sidebar({ user, view, setView }) {
     { key: "leaveapprovals", label: "Leave Approvals", icon: ClipboardCheck },
     { key: "calendar", label: "Calendar", icon: CalendarRange },
     { key: "clients", label: "Clients", icon: Building2 },
+    { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "employees", label: "Employees", icon: Users },
     { key: "rental", label: "Rental", icon: Home },
     { key: "reports", label: "Reports", icon: SlidersHorizontal },
@@ -1010,7 +1013,7 @@ function Sidebar({ user, view, setView }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
         {items.map((it) => {
-          const active = view === it.key;
+          const active = view === it.key || (view === "clientcard" && it.key === "clients");
           return (
             <button key={it.key} onClick={() => setView(it.key)}
               style={{
@@ -1139,7 +1142,223 @@ function comparisonRanges(rangeStart, rangeEnd) {
   return { prevStart, prevEnd, yoyStart, yoyEnd };
 }
 const mapCostHistory = (r) => ({ id: r.id, employeeId: r.employee_id, effectiveDate: r.effective_date, grossSalary: Number(r.gross_salary), socialSecurity: Number(r.social_security), ticketRestaurant: Number(r.ticket_restaurant), insurance: Number(r.insurance), otherCost: Number(r.other_cost) });
-const mapClientRow = (r) => ({ id: r.id, name: r.name, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee), endDate: r.end_date || null, active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null });
+const mapClientRow = (r) => ({
+  id: r.id, name: r.name, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee), endDate: r.end_date || null, active: r.active, createdAt: r.created_at ? r.created_at.slice(0, 10) : null,
+  afm: r.afm || "", doy: r.doy || "", legalForm: r.legal_form || "", address: r.address || "", email: r.email || "", phone: r.phone || "",
+  accountManagerId: r.account_manager_id || null, generalNotes: r.general_notes || "",
+  representativeName: r.representative_name || "", representativeAfm: r.representative_afm || "", representativeIdType: r.representative_id_type || "", representativeIdNumber: r.representative_id_number || "", representativeEmail: r.representative_email || "", representativePhone: r.representative_phone || "",
+  lifecycle: r.lifecycle || "live", goLiveDate: r.go_live_date || null, leadSource: r.lead_source || "", expectedFee: r.expected_fee === null || r.expected_fee === undefined ? null : Number(r.expected_fee),
+  contractStatus: r.contract_status || "none", contractSignedOn: r.contract_signed_on || null, contractVersion: Number(r.contract_version) || 1, contractSpecialTerms: r.contract_special_terms || "", contractPaymentTerms: r.contract_payment_terms || "",
+  contractServicesText: r.contract_services_text || "", contractPayrollBaseFee: r.contract_payroll_base_fee === null || r.contract_payroll_base_fee === undefined ? null : Number(r.contract_payroll_base_fee),
+  contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
+  contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
+  contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null,
+});
+const mapDocument = (r) => ({ id: r.id, clientId: r.client_id, category: r.category || "other", fileName: r.file_name, filePath: r.file_path, fileSize: Number(r.file_size) || 0, mimeType: r.mime_type || "", note: r.note || "", uploadedBy: r.uploaded_by || null, uploadedAt: r.uploaded_at });
+const DOCUMENT_BUCKET = "client-documents";
+const CONTRACT_STATUS_LABELS = { none: "No agreement", draft: "Draft", sent: "Sent for signature", signed: "Signed" };
+const CONTRACT_STATUS_TONE = { none: "neutral", draft: "warn", sent: "warn", signed: "accent" };
+const DEFAULT_FIRM = { name: "ACCOUNTING ACCO E.E.", legalFormText: "Ετερόρρυθμη Εταιρεία", afm: "802815063", doy: "ΚΕΦΟΔΕ ΑΤΤΙΚΗΣ", address: "Κάνιγγος 2, ΤΚ 10677, Αθήνα", representative: "Χάλαρης Σπυρίδων Δαυίδ", representativeId: "ΑΗ505813", representativeAfm: "141019020", email: "", phone: "", gemi: "" };
+const CONTRACT_DEFAULT_SERVICES = `Τήρηση λογιστικών βιβλίων.
+Υποβολή μηνιαίων/τριμηνιαίων φορολογικών δηλώσεων (ΦΠΑ, Παρακρατούμενων, Συμφωνητικά, Ψηφιακά Τέλη κλπ).
+Έλεγχος συμφωνίας myDATA με τα βιβλία της επιχείρησης.
+Υποβολή ετήσιας δήλωσης φορολογίας εισοδήματος (έντυπα Ν και Ε3).
+Λοιπές δηλώσεις φορολογικής συμμόρφωσης στην ΑΑΔΕ.
+Υποβολή λοιπών αιτήσεων στο ΓΕΜΗ και γενικότερη επικοινωνία με το επιμελητήριο.`;
+const CONTRACT_DEFAULT_PAYMENT = "Η τιμολόγηση πραγματοποιείται μηνιαίως 10 ημέρες πριν από τη λήξη του μήνα και η πληρωμή από τον Εντολέα θα γίνεται μέχρι την τελευταία εργάσιμη του επόμενου μήνα.";
+const GREEK_MONTHS_GEN = ["Ιανουαρίου", "Φεβρουαρίου", "Μαρτίου", "Απριλίου", "Μαΐου", "Ιουνίου", "Ιουλίου", "Αυγούστου", "Σεπτεμβρίου", "Οκτωβρίου", "Νοεμβρίου", "Δεκεμβρίου"];
+const fmtGreekDate = (key) => { if (!key) return "____/____/______"; const d = fromKey(key); return `${d.getDate()}${d.getDate() === 1 ? "η" : "η"} ${GREEK_MONTHS_GEN[d.getMonth()]} ${d.getFullYear()}`; };
+const fmtEurGr = (n) => Number(n).toLocaleString("el-GR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+const fmtBytes = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 1024 ? Math.round(n / 1024) + " KB" : n + " B";
+const escapeHtml = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Opens a print window with the given HTML so the user can "Save as PDF".
+// No extra library needed; every browser prints to PDF.
+function printHtml(title, bodyHtml, { draft = false } = {}) {
+  const w = window.open("", "_blank");
+  if (!w) { window.alert("Allow pop-ups for this site to print / save as PDF."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: Georgia, "Times New Roman", serif; font-size: 11.5pt; color: #111; margin: 36px 44px; line-height: 1.45; }
+    h1 { font-size: 17pt; margin: 0 0 4px; } h2 { font-size: 13pt; margin: 22px 0 6px; border-bottom: 1px solid #999; padding-bottom: 3px; }
+    h3 { font-size: 11.5pt; margin: 14px 0 4px; } p { margin: 6px 0; } .muted { color: #555; font-size: 10pt; }
+    table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 10.5pt; } th, td { border: 1px solid #bbb; padding: 4px 6px; vertical-align: top; text-align: left; }
+    th { background: #f0f0f0; } .kv td:first-child { width: 34%; color: #444; } .sig { display: flex; gap: 40px; margin-top: 40px; } .sig div { flex: 1; border-top: 1px solid #333; padding-top: 6px; font-size: 10pt; }
+    .stamp { position: fixed; top: 40%; left: 10%; font-size: 64pt; color: rgba(200,0,0,0.12); transform: rotate(-25deg); font-weight: bold; pointer-events: none; }
+    .footer { margin-top: 28px; font-size: 9pt; color: #666; border-top: 1px solid #ccc; padding-top: 6px; }
+    @media print { .noprint { display: none; } }
+  </style></head><body>
+  ${draft ? '<div class="stamp">DRAFT</div>' : ""}
+  <div class="noprint" style="margin-bottom:14px;font-family:sans-serif;font-size:12px;color:#555">Use your browser's Print and choose "Save as PDF". <button onclick="window.print()">Print / Save as PDF</button></div>
+  ${bodyHtml}
+  </body></html>`);
+  w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* user can press the button */ } }, 400);
+}
+const mapTemplate = (r) => ({ id: r.id, stage: r.stage || "setup", sortOrder: Number(r.sort_order) || 0, title: r.title, description: r.description || "", dueDays: Number(r.due_days) || 0, active: r.active !== false, appliesTo: r.applies_to || "all" });
+const mapAml = (r) => ({
+  clientId: r.client_id, clientType: r.client_type || "legal", gemiNumber: r.gemi_number || "", incorporationDate: r.incorporation_date || "",
+  representativeName: r.representative_name || "", representativeIdType: r.representative_id_type || "", representativeIdNumber: r.representative_id_number || "", representativeAfm: r.representative_afm || "",
+  activity: r.activity || "", countries: r.countries || "", relationshipPurpose: r.relationship_purpose || "", services: Array.isArray(r.services) ? r.services : [],
+  sourceOfFunds: r.source_of_funds || "", pepStatus: r.pep_status || "none", pepDetails: r.pep_details || "", sanctionsCheckedOn: r.sanctions_checked_on || "", sanctionsResult: r.sanctions_result || "",
+  riskFactors: Array.isArray(r.risk_factors) ? r.risk_factors : [], riskScore: Number(r.risk_score) || 0, riskLevel: r.risk_level || "low", riskOverride: r.risk_override || "", riskOverrideReason: r.risk_override_reason || "",
+  ddLevel: r.dd_level || "standard", documents: r.documents && typeof r.documents === "object" ? r.documents : {}, status: r.status || "not_started",
+  completedOn: r.completed_on || "", completedBy: r.completed_by || null, approvedBy: r.approved_by || null, approvedOn: r.approved_on || "", nextReviewOn: r.next_review_on || "", notes: r.notes || "",
+  entityType: r.entity_type || "", infoSources: r.info_sources || "", proxyName: r.proxy_name || "", proxyIdNumber: r.proxy_id_number || "", decision: r.decision || "", decisionReason: r.decision_reason || "", uboActionsRecord: r.ubo_actions_record || "",
+});
+const mapUbo = (r) => ({ id: r.id, clientId: r.client_id, name: r.name, afm: r.afm || "", idNumber: r.id_number || "", nationality: r.nationality || "", residenceCountry: r.residence_country || "", ownershipPct: r.ownership_pct === null || r.ownership_pct === undefined ? null : Number(r.ownership_pct), controlType: r.control_type || "", isPep: !!r.is_pep, verifiedOn: r.verified_on || "", verificationDoc: r.verification_doc || "", note: r.note || "" });
+
+// Onboarding stages (order matters for the checklist display).
+const ONBOARDING_STAGES = [
+  { key: "aml", label: "Due diligence (ν. 4557/2018)" },
+  { key: "contract", label: "Contract & authorisations" },
+  { key: "formation", label: "Company formation (new entity)" },
+  { key: "setup", label: "Client setup" },
+];
+const APPLIES_TO_LABELS = { all: "All clients", capital: "Α.Ε. / Ε.Π.Ε. / Ι.Κ.Ε. only", if_applicable: "If applicable" };
+const isCapitalCompany = (legalForm) => ["Α.Ε.", "Ε.Π.Ε.", "Ι.Κ.Ε."].includes(legalForm);
+const stageLabel = (k) => ONBOARDING_STAGES.find((s) => s.key === k)?.label || k;
+
+// AML risk model — "Μοντέλο Α" of the Taxheaven guide (Κουλογιάννης, 8/2026):
+// four axes mirroring παρ. 1 άρθρου 35 ν. 4557/2018. Annex I factors subtract
+// points, Annex II factors add; a few cases override everything and force
+// high risk / enhanced due diligence regardless of the sum. The points are
+// a firm-level methodology choice, not a statutory scale.
+const AML_AXES = [
+  { key: "A", label: "Axis A — Type and nature of the client" },
+  { key: "B", label: "Axis B — Geography (worst of seat, shareholders, UBO, counterparties)" },
+  { key: "C", label: "Axis C — Services and products" },
+  { key: "D", label: "Axis D — Transactions and delivery channel" },
+];
+const AML_RISK_FACTORS = [
+  // Axis A
+  { key: "a_listed", axis: "A", points: -2, ref: "I-1α", label: "Listed on an EU regulated market (or equivalent)" },
+  { key: "a_public", axis: "A", points: -2, ref: "I-1β", label: "Public authority, ΝΠΔΔ, majority state-owned, EU body" },
+  { key: "a_unusual", axis: "A", points: 3, ref: "II-1α", label: "Relationship developing in unusual circumstances" },
+  { key: "a_asset_vehicle", axis: "A", points: 3, ref: "II-1γ", label: "Personal asset-holding vehicle" },
+  { key: "a_nominee", axis: "A", points: 4, ref: "II-1δ", label: "Nominee shareholders or bearer shares" },
+  { key: "a_cash", axis: "A", points: 3, ref: "II-1ε", label: "Cash-intensive business" },
+  { key: "a_complex", axis: "A", points: 4, ref: "II-1στ", label: "Unusual or excessively complex ownership structure" },
+  { key: "a_golden_visa", axis: "A", points: 4, ref: "II-1ζ", label: "Third-country national applying for residence/citizenship by investment" },
+  { key: "a_ubo_unknown", axis: "A", points: 4, ref: "άρ. 3 παρ. 17", label: "Beneficial owner not identified despite exhausting all means" },
+  { key: "a_pep", axis: "A", override: true, ref: "άρ. 18", label: "Client or UBO is a PEP, close relative or close associate" },
+  // Axis B
+  { key: "b_eu", axis: "B", points: -1, ref: "I-3α", label: "Greece or another EU member state" },
+  { key: "b_fatf_ok", axis: "B", points: 0, ref: "I-3β/γ", label: "Third country with documented positive FATF assessment" },
+  { key: "b_third", axis: "B", points: 2, ref: "—", label: "Third country without findings but without positive assessment" },
+  { key: "b_corruption", axis: "B", points: 3, ref: "II-3β", label: "Country with high corruption or organised crime (credible sources)" },
+  { key: "b_weak_aml", axis: "B", points: 4, ref: "II-3α", label: "Country with established lack of effective AML/CFT systems" },
+  { key: "b_eu_list", axis: "B", override: true, ref: "άρ. 16, 16Α", label: "High-risk third country on the European Commission list" },
+  { key: "b_sanctions", axis: "B", override: true, ref: "II-3γ", label: "Country under EU or UN sanctions / restrictive measures" },
+  { key: "b_terror", axis: "B", override: true, ref: "II-3δ", label: "Country financing or supporting terrorist activities" },
+  // Axis C
+  { key: "c_simple", axis: "C", points: -1, ref: "I-2ε", label: "Bookkeeping and filings only, small scale, full transparency of identity" },
+  { key: "c_formation", axis: "C", points: 2, ref: "—", label: "Company formation, corporate changes or registered-office services" },
+  { key: "c_private_banking", axis: "C", points: 2, ref: "II-2α", label: "Client maintains a private banking relationship" },
+  { key: "c_crypto", axis: "C", points: 3, ref: "II-2ε", label: "New products or technologies (e.g. crypto-assets)" },
+  { key: "c_sensitive_goods", axis: "C", points: 3, ref: "II-2στ", label: "Oil, precious metals, tobacco, cultural goods, ivory, protected species" },
+  { key: "c_anonymity", axis: "C", points: 4, ref: "II-2β", label: "Products or transactions favouring anonymity" },
+  // Axis D
+  { key: "d_remote_eid", axis: "D", points: 0, ref: "II-2γ (neutralised)", label: "Remote relationship with recognised e-ID or equivalent safeguards" },
+  { key: "d_proxy", axis: "D", points: 1, ref: "—", label: "Client acts through an authorised person / proxy" },
+  { key: "d_remote", axis: "D", points: 3, ref: "II-2γ", label: "Remote relationship without eIDAS-level safeguards" },
+  { key: "d_third_party_pay", axis: "D", points: 4, ref: "II-2δ", label: "Payments from unrelated third parties" },
+  { key: "d_complex_tx", axis: "D", points: 5, ref: "άρ. 16 παρ. 3", label: "Complex, unusually large or unusual-pattern transactions, no apparent purpose" },
+];
+// Scale (Β.5.2.2 of the guide): ≤0 with at least one Annex I factor → low;
+// +1..+5, or ≤0 without any Annex I factor → medium; ≥+6 or any override → high.
+function amlAssess(factorKeys) {
+  const chosen = AML_RISK_FACTORS.filter((f) => factorKeys.includes(f.key));
+  const score = chosen.reduce((s, f) => s + (f.points || 0), 0);
+  const forced = chosen.some((f) => f.override);
+  const hasAnnexI = chosen.some((f) => (f.points || 0) < 0);
+  let level;
+  if (forced || score >= 6) level = "high";
+  else if (score >= 1 || !hasAnnexI) level = "medium";
+  else level = "low";
+  return { score, level, forced, hasAnnexI, overrides: chosen.filter((f) => f.override) };
+}
+const AML_DD_FOR_LEVEL = { low: "simplified", medium: "standard", high: "enhanced" };
+// Review cadence from the ΑΑΔΕ seminar material quoted in the guide: at
+// least every 2 years for low risk, at least yearly otherwise (and on every
+// change for high risk).
+const AML_REVIEW_MONTHS = { low: 24, medium: 12, high: 12 };
+const AML_LEVEL_LABELS = { low: "Low", medium: "Medium", high: "High" };
+const AML_LEVEL_TONE = { low: "accent", medium: "warn", high: "danger" };
+const AML_DD_LABELS = { simplified: "Simplified (άρ. 15)", standard: "Standard (άρ. 13)", enhanced: "Enhanced (άρ. 16–18)" };
+const AML_STATUS_LABELS = { not_started: "Not started", in_progress: "In progress", completed: "Completed", declined: "Declined" };
+const AML_STATUS_TONE = { not_started: "neutral", in_progress: "warn", completed: "accent", declined: "danger" };
+// Identification documents per ΠΟΛ.1200/2018 tables A–D, plus the file
+// items the guide's new-client flow requires (KYC form with GDPR notice,
+// UBO register proof, engagement letter).
+const AML_ENTITY_TYPES = { natural: "Natural person (Table A)", capital: "Capital company — Α.Ε., Ε.Π.Ε., Ι.Κ.Ε. (Table B)", partnership: "Partnership — Ο.Ε., Ε.Ε. (Table C)", other: "Other legal person / entity (Table D)" };
+const amlEntityTypeFor = (legalForm) => ["Ατομική", "Ιδιώτης"].includes(legalForm) ? "natural" : ["Α.Ε.", "Ε.Π.Ε.", "Ι.Κ.Ε."].includes(legalForm) ? "capital" : ["Ο.Ε.", "Ε.Ε."].includes(legalForm) ? "partnership" : "other";
+const AML_DOCUMENTS = [
+  { key: "kyc_form", label: "Signed KYC questionnaire incl. GDPR notice (άρ. 31 παρ. 2)", types: ["natural", "capital", "partnership", "other"] },
+  { key: "rep_id", label: "ID / passport / residence permit of client or legal representative (Table A)", types: ["natural", "capital", "partnership", "other"] },
+  { key: "address", label: "Proof of address — recent utility bill or lease (Table A)", types: ["natural"] },
+  { key: "occupation", label: "Occupation evidence — employer certificate, payslip, professional ID, insurance certificate (Table A)", types: ["natural"] },
+  { key: "afm_natural", label: "ΑΦΜ certificate (βεβαίωση απόδοσης ΑΦΜ)", types: ["natural"] },
+  { key: "articles", label: "Articles of association published in ΓΕΜΗ, with amendments", types: ["capital", "partnership"] },
+  { key: "legalisation", label: "Legalisation documents with amendments", types: ["other"] },
+  { key: "appointment", label: "Appointment of managers / legal representative (ΓΕΜΗ)", types: ["capital"] },
+  { key: "afm_entity", label: "ΑΑΔΕ start-of-business certificate (βεβαίωση έναρξης μη φυσικού προσώπου)", types: ["capital", "partnership", "other"] },
+  { key: "shareholders", label: "Shareholder / partner register (ownership mapping)", types: ["capital", "partnership", "other"] },
+  { key: "ubo_registry", label: "Proof of registration in the Central UBO Register (άρ. 14 παρ. 1)", types: ["capital", "partnership", "other"] },
+  { key: "ubo_ids", label: "Table A documents for every beneficial owner", types: ["capital", "partnership", "other"] },
+  { key: "proxy", label: "Authorised person: ID and authorisation (if acting via proxy)", types: ["natural", "capital", "partnership", "other"], optional: true },
+  { key: "source_of_funds", label: "Source of wealth / origin of funds evidence (enhanced due diligence)", types: ["natural", "capital", "partnership", "other"], enhancedOnly: true },
+  { key: "engagement", label: "Signed engagement letter describing the services", types: ["natural", "capital", "partnership", "other"] },
+];
+const AML_SERVICES = ["Bookkeeping", "Tax filings", "Payroll", "Advisory", "Representation before authorities", "Company formation / corporate changes", "Registered office"];
+const mapContact = (r) => ({ id: r.id, clientId: r.client_id, name: r.name, role: r.role || "", email: r.email || "", phone: r.phone || "", note: r.note || "", isPrimary: !!r.is_primary });
+const mapNote = (r) => ({ id: r.id, clientId: r.client_id, authorId: r.author_id || null, kind: r.kind, noteDate: r.note_date, content: r.content, createdAt: r.created_at });
+const mapTask = (r) => ({ id: r.id, clientId: r.client_id || null, kind: r.kind || "general", stage: r.stage || null, title: r.title, description: r.description || "", assignedTo: r.assigned_to || null, createdBy: r.created_by || null, dueDate: r.due_date || null, priority: r.priority, status: r.status, doneAt: r.done_at || null, createdAt: r.created_at });
+
+// CRM vocab
+const LEGAL_FORMS = ["Ατομική", "Ο.Ε.", "Ε.Ε.", "Ι.Κ.Ε.", "Ε.Π.Ε.", "Α.Ε.", "Υποκατάστημα αλλοδαπής", "Ιδιώτης", "Άλλο"];
+const NOTE_KINDS = { call: "Call", email: "Email", meeting: "Meeting", note: "Note" };
+const TASK_PRIORITIES = { high: "High", normal: "Normal", low: "Low" };
+const TASK_PRIORITY_TONE = { high: "danger", normal: "neutral", low: "accent" };
+const TASK_STATUSES = { open: "Open", in_progress: "In progress", done: "Done" };
+const TASK_STATUS_TONE = { open: "neutral", in_progress: "warn", done: "accent" };
+// Open tasks: overdue if the due date has passed.
+const taskIsOverdue = (t) => t.status !== "done" && t.dueDate && fromKey(t.dueDate) < TODAY;
+const LIFECYCLE_LABELS = { lead: "Lead", onboarding: "Onboarding", live: "Live", ended: "Ended" };
+const LIFECYCLE_TONE = { lead: "neutral", onboarding: "warn", live: "accent", ended: "danger" };
+// Onboarding progress for a client: its checklist tasks and how many are done.
+function onboardingProgress(client, tasks) {
+  const list = tasks.filter((t) => t.clientId === client.id && t.kind === "onboarding");
+  const done = list.filter((t) => t.status === "done").length;
+  return { list, done, total: list.length, complete: list.length > 0 && done === list.length };
+}
+// Starts onboarding: creates one task per active checklist item (assigned
+// to the account manager, or whoever starts it) and moves the client to
+// 'onboarding'. Items already present for this client are not duplicated.
+// includeFormation: also create the "Company formation" tasks (for a newly
+// formed entity). Items marked for capital companies are skipped unless the
+// client's legal form is Α.Ε./Ε.Π.Ε./Ι.Κ.Ε.; "if applicable" items are
+// created with that note so they can be closed or deleted quickly.
+async function startOnboarding(client, templates, existingTasks, user, { includeFormation = false } = {}) {
+  const have = new Set(existingTasks.filter((t) => t.clientId === client.id && t.kind === "onboarding").map((t) => t.title));
+  const stageRank = (k) => ONBOARDING_STAGES.findIndex((s) => s.key === k);
+  const applicable = (tpl) => {
+    if (tpl.stage === "formation" && !includeFormation) return false;
+    if (tpl.appliesTo === "capital" && !isCapitalCompany(client.legalForm)) return false;
+    return true;
+  };
+  const rows = templates.filter((tpl) => tpl.active && !have.has(tpl.title) && applicable(tpl)).sort((a, b) => stageRank(a.stage) - stageRank(b.stage) || a.sortOrder - b.sortOrder).map((tpl) => ({
+    client_id: client.id, kind: "onboarding", stage: tpl.stage, title: tpl.title, description: [tpl.appliesTo === "if_applicable" ? "If applicable — close or delete if not relevant." : null, tpl.description || null].filter(Boolean).join(" ") || null,
+    assigned_to: client.accountManagerId || user.id, created_by: user.id,
+    due_date: toKey(addDays(TODAY, tpl.dueDays)), priority: "normal", status: "open",
+  }));
+  if (rows.length) {
+    const { error } = await supabase.from("tasks").insert(rows);
+    if (error) { window.alert(`Couldn't create onboarding tasks: ${error.message}`); return false; }
+  }
+  const { error } = await supabase.from("clients").update({ lifecycle: "onboarding", go_live_date: null }).eq("id", client.id);
+  if (error) { window.alert(`Couldn't update client: ${error.message}`); return false; }
+  return true;
+}
 const mapFeeHistory = (r) => ({
   id: r.id, clientId: r.client_id, effectiveDate: r.effective_date, fixedFee: r.fixed_fee === null ? null : Number(r.fixed_fee),
   allocation: { accounting: Number(r.alloc_accounting), tax: Number(r.alloc_tax), payroll: Number(r.alloc_payroll), other: Number(r.alloc_other) },
@@ -1796,11 +2015,11 @@ function TeamCalendar({ employees, leaveRequests }) {
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
 
-function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses }) {
+function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, tasks = [], onOpenCard, templates = [] }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
-    statCards: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
+    statCards: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
@@ -2083,7 +2302,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   ].map((r) => ({ ...r, vsPrev: pctChange(r.value, prevTotals[r.key]), vsYoy: pctChange(r.value, yoyTotals[r.key]) }));
 
   const CONFIG_LABELS = {
-    statCards: "Summary cards", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
+    statCards: "Summary cards", onboardingPanel: "Pipeline — leads & onboarding", tasksPanel: "Tasks — overdue & due this week", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
     byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
@@ -2132,6 +2351,77 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           <StatCard label="Avg. effective rate" value={fmtEur(avgEffectiveRate) + "/h"} sub="Revenue ÷ hours worked" />
         </div>
       )}
+
+      {config.onboardingPanel && (() => {
+        const leads = clients.filter((c) => c.lifecycle === "lead");
+        const onboarding = clients.filter((c) => c.lifecycle === "onboarding");
+        const recentLive = clients.filter((c) => c.lifecycle === "live" && c.goLiveDate && fromKey(c.goLiveDate) >= addDays(TODAY, -30));
+        if (leads.length === 0 && onboarding.length === 0 && recentLive.length === 0) return null;
+        const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+        const link = (c) => <button onClick={() => onOpenCard && onOpenCard(c.id)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 13, color: C.accentDark, textDecoration: "underline" }}>{c.name}</button>;
+        return (
+          <Panel style={{ marginBottom: 18 }}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Pipeline</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>{leads.length} lead{leads.length === 1 ? "" : "s"} · {onboarding.length} in onboarding · {recentLive.length} went live in the last 30 days</div>
+            <TableShell headers={["Client", "Stage", "Account manager", "Progress", "Next due"]}>
+              {[...onboarding, ...leads, ...recentLive].map((c) => {
+                const p = onboardingProgress(c, tasks);
+                const next = p.list.filter((t) => t.status !== "done" && t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+                return (
+                  <tr key={c.id}>
+                    <Td>{link(c)}</Td>
+                    <Td><Badge tone={LIFECYCLE_TONE[c.lifecycle]}>{LIFECYCLE_LABELS[c.lifecycle]}</Badge>{c.lifecycle === "live" && c.goLiveDate ? <span style={{ fontFamily: mono, fontSize: 11, color: C.inkMuted, marginLeft: 6 }}>{c.goLiveDate}</span> : null}</Td>
+                    <Td>{empName(c.accountManagerId)}</Td>
+                    <Td>
+                      {c.lifecycle === "onboarding" && p.total > 0 ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 120, height: 7, background: C.border, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(p.done / p.total) * 100}%`, height: "100%", background: C.warn }} /></div>
+                          <span style={{ fontFamily: mono, fontSize: 11.5, color: C.inkMuted }}>{p.done}/{p.total}</span>
+                        </div>
+                      ) : c.lifecycle === "onboarding" ? <span style={{ color: C.inkFaint }}>no checklist</span> : "—"}
+                    </Td>
+                    <Td mono style={{ color: next && taskIsOverdue(next) ? C.danger : C.inkMuted }}>{next ? `${next.dueDate} · ${next.title}` : "—"}</Td>
+                  </tr>
+                );
+              })}
+            </TableShell>
+          </Panel>
+        );
+      })()}
+
+      {config.tasksPanel && (() => {
+        const weekEnd = addDays(TODAY, 7);
+        const open = tasks.filter((t) => t.status !== "done");
+        const overdue = open.filter(taskIsOverdue).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const dueSoon = open.filter((t) => t.dueDate && !taskIsOverdue(t) && fromKey(t.dueDate) <= weekEnd).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const show = [...overdue, ...dueSoon];
+        const empName = (id) => employees.find((e) => e.id === id)?.name || "Unassigned";
+        const clientLabel = (id) => clients.find((c) => c.id === id)?.name || "—";
+        return (
+          <Panel style={{ marginBottom: 18 }}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Tasks</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+              {overdue.length} overdue · {dueSoon.length} due in the next 7 days · {open.length} open in total
+            </div>
+            {show.length === 0 ? (
+              <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted }}>Nothing overdue or due this week.</div>
+            ) : (
+              <TableShell headers={["Due", "Task", "Client", "Assigned to", "Priority", "Status"]}>
+                {show.slice(0, 15).map((t) => (
+                  <tr key={t.id}>
+                    <Td mono style={{ color: taskIsOverdue(t) ? C.danger : undefined }}>{t.dueDate}</Td>
+                    <Td>{t.title}</Td>
+                    <Td>{t.clientId ? <button onClick={() => onOpenCard && onOpenCard(t.clientId)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 13, color: C.accentDark, textDecoration: "underline" }}>{clientLabel(t.clientId)}</button> : "—"}</Td>
+                    <Td>{empName(t.assignedTo)}</Td>
+                    <Td><Badge tone={TASK_PRIORITY_TONE[t.priority]}>{TASK_PRIORITIES[t.priority]}</Badge></Td>
+                    <Td><Badge tone={taskIsOverdue(t) ? "danger" : TASK_STATUS_TONE[t.status]}>{taskIsOverdue(t) ? "Overdue" : TASK_STATUSES[t.status]}</Badge></Td>
+                  </tr>
+                ))}
+              </TableShell>
+            )}
+          </Panel>
+        );
+      })()}
 
       {config.growthPanel && (
         <Panel style={{ marginBottom: 18 }}>
@@ -2662,9 +2952,13 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
 /* Admin: Clients                                                          */
 /* ---------------------------------------------------------------------- */
 
-function AdminClients({ clients, refetchClients, entries }) {
+function AdminClients({ user, clients, refetchClients, entries, onOpenCard, tasks = [], templates = [], refetchTasks, amlRecords = [], employees = [] }) {
+  const [showAmlRegister, setShowAmlRegister] = useState(false);
   const [modal, setModal] = useState(null); // null | "new" | client object
   const [name, setName] = useState("");
+  const [lifecycleNew, setLifecycleNew] = useState("onboarding");
+  const [newCompany, setNewCompany] = useState(false);
+  const [lifecycleFilter, setLifecycleFilter] = useState("all");
   const [allocAccounting, setAllocAccounting] = useState("");
   const [allocTax, setAllocTax] = useState("");
   const [allocPayroll, setAllocPayroll] = useState("");
@@ -2721,7 +3015,7 @@ function AdminClients({ clients, refetchClients, entries }) {
     { cc_other_note: note || null },
   );
   function openNew() {
-    setModal("new"); setName(""); setFixedFee(""); setFeeEffectiveDate(toKey(TODAY)); setEndDate(""); setEditingHistoryId(null);
+    setModal("new"); setName(""); setFixedFee(""); setFeeEffectiveDate(toKey(TODAY)); setEndDate(""); setEditingHistoryId(null); setLifecycleNew("onboarding"); setNewCompany(false);
     resetAllocFields(null);
   }
   function openEdit(c) {
@@ -2742,10 +3036,14 @@ function AdminClients({ clients, refetchClients, entries }) {
     if (!splitResult) return;
     const { split, note: splitNote } = splitResult;
     if (modal === "new") {
-      const { data, error } = await supabase.from("clients").insert({ name: name.trim(), fixed_fee: fee, end_date: endDate || null }).select().single();
+      const { data, error } = await supabase.from("clients").insert({ name: name.trim(), fixed_fee: fee, end_date: endDate || null, lifecycle: lifecycleNew, go_live_date: lifecycleNew === "live" ? toKey(TODAY) : null }).select().single();
       if (error || !data) {
         window.alert(`Couldn't create client: ${error ? error.message : "unknown error"}`);
         return;
+      }
+      if (lifecycleNew === "onboarding") {
+        await startOnboarding({ id: data.id, accountManagerId: null, legalForm: "" }, templates, [], user, { includeFormation: newCompany });
+        if (refetchTasks) refetchTasks();
       }
       const { error: feeError } = await supabase.from("client_fee_history").insert({
         client_id: data.id, effective_date: feeEffectiveDate || toKey(TODAY), fixed_fee: fee,
@@ -2878,8 +3176,11 @@ function AdminClients({ clients, refetchClients, entries }) {
 
   const [viewRangeStart, viewRangeEnd] = periodRange(viewPeriod, viewAnchor);
   const periodEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= viewRangeStart && d <= viewRangeEnd; });
-  const filtered = clients.filter((c) => c.name.toLowerCase().includes(query.toLowerCase()));
+  const filtered = clients
+    .filter((c) => c.name.toLowerCase().includes(query.toLowerCase()))
+    .filter((c) => lifecycleFilter === "all" || c.lifecycle === lifecycleFilter);
   const liveClient = modal && modal !== "new" ? clients.find((c) => c.id === modal.id) : null;
+  const lifecycleCounts = Object.fromEntries(Object.keys(LIFECYCLE_LABELS).map((k) => [k, clients.filter((c) => c.lifecycle === k).length]));
 
   return (
     <div>
@@ -2889,7 +3190,7 @@ function AdminClients({ clients, refetchClients, entries }) {
             <Btn variant="secondary" onClick={() => exportToExcel(`clients-${toKey(TODAY)}.xlsx`, [{
               name: "Clients",
               rows: clients.map((c) => ({
-                Name: c.name, Status: c.active ? "Active" : "Inactive",
+                Name: c.name, Stage: LIFECYCLE_LABELS[c.lifecycle], "Go-live date": c.goLiveDate || "", Status: c.active ? "Active" : "Inactive",
                 "Fixed fee (€/mo)": c.fixedFee ?? "", "Accounting alloc. (h)": c.allocation?.accounting || 0,
                 "Tax alloc. (h)": c.allocation?.tax || 0, "Payroll alloc. (h)": c.allocation?.payroll || 0,
                 "Other alloc. (h)": c.allocation?.other || 0,
@@ -2897,9 +3198,48 @@ function AdminClients({ clients, refetchClients, entries }) {
                 "Fee → Other note": c.feeSplitNote || "",
               })),
             }])}>Export to Excel</Btn>
+            <Btn variant="secondary" onClick={() => setShowAmlRegister((v) => !v)}>{showAmlRegister ? "Hide AML register" : "AML register"}</Btn>
             <Btn icon={Plus} onClick={openNew}>Add client</Btn>
           </div>
         } />
+      {showAmlRegister && (() => {
+        // Συγκεντρωτική κατάσταση κατάταξης πελατών — one line per client,
+        // the list an ΑΑΔΕ audit asks for (question 15 of the questionnaire).
+        const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+        const rows = clients.filter((c) => c.lifecycle !== "lead").map((c) => ({ c, a: amlRecords.find((x) => x.clientId === c.id) || null }))
+          .sort((x, y) => (x.a ? 0 : 1) - (y.a ? 0 : 1) || x.c.name.localeCompare(y.c.name));
+        const counts = { assessed: rows.filter((r) => r.a && r.a.status === "completed").length, inProgress: rows.filter((r) => r.a && r.a.status !== "completed" && r.a.status !== "declined").length, none: rows.filter((r) => !r.a).length, review: rows.filter((r) => r.a?.nextReviewOn && fromKey(r.a.nextReviewOn) < TODAY).length };
+        return (
+          <Panel style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>AML register — client risk classification (ν. 4557/2018)</div>
+                <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>{counts.assessed} assessed · {counts.inProgress} in progress · {counts.none} without a file · {counts.review} review overdue</div>
+              </div>
+              <Btn size="sm" variant="secondary" onClick={() => exportToExcel(`aml-register-${toKey(TODAY)}.xlsx`, [{ name: "AML register", rows: rows.map(({ c, a }) => ({
+                Client: c.name, "ΑΦΜ": c.afm || "", "Legal form": c.legalForm || "", Stage: LIFECYCLE_LABELS[c.lifecycle], "Entity type (ΠΟΛ.1200)": a ? (AML_ENTITY_TYPES[a.entityType] || "") : "",
+                "Risk sum": a ? a.riskScore : "", "Risk level": a ? AML_LEVEL_LABELS[a.riskLevel] : "", "Due diligence": a ? AML_DD_LABELS[a.ddLevel] : "", PEP: a ? (a.pepStatus !== "none" ? "Yes" : "No") : "",
+                "File status": a ? AML_STATUS_LABELS[a.status] : "No file", "Completed on": a?.completedOn || "", "Completed by": a ? empName(a.completedBy) : "", "Approved by": a ? empName(a.approvedBy) : "", "Next review": a?.nextReviewOn || "",
+              })) }])}>Export to Excel</Btn>
+            </div>
+            <TableShell headers={["Client", "Stage", "Risk", "Due diligence", "PEP", "File", "Completed", "Next review", ""]}>
+              {rows.map(({ c, a }) => (
+                <tr key={c.id}>
+                  <Td style={{ fontWeight: 600 }}>{c.name}</Td>
+                  <Td><Badge tone={LIFECYCLE_TONE[c.lifecycle]}>{LIFECYCLE_LABELS[c.lifecycle]}</Badge></Td>
+                  <Td>{a ? <><Badge tone={AML_LEVEL_TONE[a.riskLevel]}>{AML_LEVEL_LABELS[a.riskLevel]}</Badge><span style={{ fontFamily: mono, fontSize: 11, color: C.inkMuted, marginLeft: 6 }}>{a.riskScore >= 0 ? "+" : ""}{a.riskScore}</span></> : <span style={{ color: C.inkFaint }}>—</span>}</Td>
+                  <Td style={{ color: C.inkMuted }}>{a ? AML_DD_LABELS[a.ddLevel] : "—"}</Td>
+                  <Td>{a && a.pepStatus !== "none" ? <Badge tone="danger">PEP</Badge> : <span style={{ color: C.inkFaint }}>—</span>}</Td>
+                  <Td>{a ? <Badge tone={AML_STATUS_TONE[a.status]}>{AML_STATUS_LABELS[a.status]}</Badge> : <Badge tone="danger">No file</Badge>}</Td>
+                  <Td mono style={{ color: C.inkMuted }}>{a?.completedOn || "—"}</Td>
+                  <Td mono style={{ color: a?.nextReviewOn && fromKey(a.nextReviewOn) < TODAY ? C.danger : C.inkMuted }}>{a?.nextReviewOn || "—"}</Td>
+                  <Td right><Btn size="sm" variant="ghost" onClick={() => onOpenCard(c.id)}>Open</Btn></Td>
+                </tr>
+              ))}
+            </TableShell>
+          </Panel>
+        );
+      })()}
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>
           Hours, allocation, and fee below reflect this reporting period — not just the latest settings.
@@ -2907,12 +3247,23 @@ function AdminClients({ clients, refetchClients, entries }) {
         <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
       </Panel>
       <Panel style={{ marginBottom: 18 }}>
-        <div style={{ marginBottom: 14, position: "relative", maxWidth: 260 }}>
-          <Search size={14} color={C.inkFaint} style={{ position: "absolute", left: 9, top: 9 }} />
-          <input placeholder="Search clients…" value={query} onChange={(e) => setQuery(e.target.value)}
-            style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ position: "relative", width: 260 }}>
+            <Search size={14} color={C.inkFaint} style={{ position: "absolute", left: 9, top: 9 }} />
+            <input placeholder="Search clients…" value={query} onChange={(e) => setQuery(e.target.value)}
+              style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} />
+          </div>
+          <div style={{ display: "flex", border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+            {[["all", "All"], ...Object.entries(LIFECYCLE_LABELS)].map(([k, label]) => (
+              <button key={k} type="button" onClick={() => setLifecycleFilter(k)}
+                style={{ padding: "7px 11px", fontSize: 12.5, fontFamily: sans, fontWeight: 600, border: "none", cursor: "pointer",
+                  background: lifecycleFilter === k ? C.accent : C.surface, color: lifecycleFilter === k ? "#fff" : C.inkMuted }}>
+                {label}{k !== "all" ? ` (${lifecycleCounts[k]})` : ""}
+              </button>
+            ))}
+          </div>
         </div>
-        <TableShell headers={["Client", "Hours", "Revenue", "Allocation", "Fixed fee", "Extra fees (period)", "Status", ""]}>
+        <TableShell headers={["Client", "Stage", "Hours", "Revenue", "Allocation", "Fixed fee", "Extra fees (period)", "Status", ""]}>
           {filtered.map((c) => {
             const clientPeriodEntries = periodEntries.filter((e) => e.clientId === c.id);
             const hrs = clientPeriodEntries.reduce((s, e) => s + e.hours, 0);
@@ -2925,6 +3276,10 @@ function AdminClients({ clients, refetchClients, entries }) {
             return (
               <tr key={c.id} style={{ opacity: c.active ? 1 : 0.55 }}>
                 <Td>{c.name}</Td>
+                <Td>
+                  <Badge tone={LIFECYCLE_TONE[c.lifecycle]}>{LIFECYCLE_LABELS[c.lifecycle]}</Badge>
+                  {c.lifecycle === "onboarding" && (() => { const p = onboardingProgress(c, tasks); return <span style={{ fontFamily: mono, fontSize: 11, color: C.inkMuted, marginLeft: 6 }}>{p.done}/{p.total}</span>; })()}
+                </Td>
                 <Td mono>{hrs.toFixed(2)}h</Td>
                 <Td mono>{fmtEur(revenue)}</Td>
                 <Td mono title={allocTitle}>{allocation ? allocation.toFixed(1) + "h" : "—"}</Td>
@@ -2948,7 +3303,8 @@ function AdminClients({ clients, refetchClients, entries }) {
                 </Td>
                 <Td right>
                   <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                    <Btn size="sm" variant="ghost" icon={Pencil} onClick={() => openEdit(c)}>Edit</Btn>
+                    <Btn size="sm" variant="secondary" icon={UserRound} onClick={() => onOpenCard(c.id)}>Card</Btn>
+                    <Btn size="sm" variant="ghost" icon={Euro} onClick={() => onOpenCard(c.id, "fees")}>Fees</Btn>
                     <Btn size="sm" variant={c.active ? "danger" : "secondary"} onClick={() => toggleActive(c)}>
                       {c.active ? "Deactivate" : "Reactivate"}
                     </Btn>
@@ -2973,6 +3329,7 @@ function AdminClients({ clients, refetchClients, entries }) {
             return (
               <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
                 <Td>Total ({filtered.length} client{filtered.length === 1 ? "" : "s"})</Td>
+                <Td />
                 <Td mono>{totalHrs.toFixed(2)}h</Td>
                 <Td mono>{fmtEur(totalRevenue)}</Td>
                 <Td />
@@ -3015,6 +3372,21 @@ function AdminClients({ clients, refetchClients, entries }) {
             <Field label="Client name">
               <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Acme Retail" />
             </Field>
+            {modal === "new" && (
+              <Field label="Stage">
+                <select style={inputStyle} value={lifecycleNew} onChange={(e) => setLifecycleNew(e.target.value)}>
+                  <option value="lead">Lead — prospect, no setup yet</option>
+                  <option value="onboarding">Onboarding — create the setup checklist now ({templates.filter((t) => t.active).length} tasks)</option>
+                  <option value="live">Live — already set up</option>
+                </select>
+                {lifecycleNew === "onboarding" && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink, marginTop: 8 }}>
+                    <input type="checkbox" checked={newCompany} onChange={(e) => setNewCompany(e.target.checked)} />
+                    Newly formed company — also create the company formation tasks (ΥΜΣ, μισθωτήριο, τράπεζα, ΕΦΚΑ, κεφάλαιο, ΓΕΜΗ…)
+                  </label>
+                )}
+              </Field>
+            )}
             {liveClient && (() => {
               const clientEntries = entries.filter((e) => e.clientId === liveClient.id);
               const [pStart, pEnd] = periodRange(viewPeriod, viewAnchor);
@@ -4546,6 +4918,1492 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* CRM: shared task & note editors                                         */
+/* ---------------------------------------------------------------------- */
+
+const textareaStyle = { ...inputStyle, minHeight: 80, resize: "vertical", lineHeight: 1.45 };
+
+// Create/edit a task. `task` null = new. `fixedClientId` pins the client
+// (from a client card); otherwise the client is picked in the form.
+function TaskModal({ user, task, fixedClientId, clients, employees, onClose, onSaved }) {
+  const [title, setTitle] = useState(task?.title || "");
+  const [description, setDescription] = useState(task?.description || "");
+  const [clientId, setClientId] = useState(task?.clientId || fixedClientId || "");
+  const [assignedTo, setAssignedTo] = useState(task?.assignedTo || user.id);
+  const [dueDate, setDueDate] = useState(task?.dueDate || "");
+  const [priority, setPriority] = useState(task?.priority || "normal");
+  const [status, setStatus] = useState(task?.status || "open");
+
+  async function save() {
+    if (!title.trim()) { window.alert("Give the task a title."); return; }
+    const row = {
+      title: title.trim(), description: description.trim() || null, client_id: clientId || null,
+      assigned_to: assignedTo || null, due_date: dueDate || null, priority, status,
+      done_at: status === "done" ? (task?.doneAt || toKey(TODAY)) : null,
+    };
+    const { error } = task
+      ? await supabase.from("tasks").update(row).eq("id", task.id)
+      : await supabase.from("tasks").insert({ ...row, created_by: user.id });
+    if (error) { window.alert(`Couldn't save task: ${error.message}`); return; }
+    await onSaved();
+    onClose();
+  }
+  async function remove() {
+    if (!window.confirm("Delete this task?")) return;
+    const { error } = await supabase.from("tasks").delete().eq("id", task.id);
+    if (error) { window.alert(`Couldn't delete: ${error.message}`); return; }
+    await onSaved();
+    onClose();
+  }
+  const activeEmployees = employees.filter((e) => e.active || e.id === assignedTo);
+  return (
+    <Modal title={task ? "Edit task" : "New task"} onClose={onClose} width={460}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Title">
+          <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Send ΦΠΑ Q3 draft for approval" autoFocus />
+        </Field>
+        <Field label="Details (optional)">
+          <textarea style={textareaStyle} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        {!fixedClientId && (
+          <Field label="Client (optional)">
+            <select style={inputStyle} value={clientId} onChange={(e) => setClientId(e.target.value)}>
+              <option value="">— no client —</option>
+              {clients.filter((c) => c.active || c.id === clientId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="Assigned to">
+            <select style={inputStyle} value={assignedTo || ""} onChange={(e) => setAssignedTo(e.target.value)}>
+              <option value="">— unassigned —</option>
+              {activeEmployees.map((e) => <option key={e.id} value={e.id}>{e.name}{e.id === user.id ? " (me)" : ""}</option>)}
+            </select>
+          </Field>
+          <Field label="Due date">
+            <input type="date" style={inputStyle} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="Priority">
+            <select style={inputStyle} value={priority} onChange={(e) => setPriority(e.target.value)}>
+              {Object.entries(TASK_PRIORITIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select style={inputStyle} value={status} onChange={(e) => setStatus(e.target.value)}>
+              {Object.entries(TASK_STATUSES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+          <div>{task && (task.createdBy === user.id || user.role === "admin") && <Btn variant="ghost" size="sm" icon={Trash2} onClick={remove}>Delete</Btn>}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+            <Btn onClick={save}>{task ? "Save" : "Create task"}</Btn>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Add/edit a communication note (call, email, meeting, note) on a client.
+function NoteModal({ user, note, fixedClientId, clients, onClose, onSaved }) {
+  const [clientId, setClientId] = useState(note?.clientId || fixedClientId || "");
+  const [kind, setKind] = useState(note?.kind || "note");
+  const [noteDate, setNoteDate] = useState(note?.noteDate || toKey(TODAY));
+  const [content, setContent] = useState(note?.content || "");
+  async function save() {
+    if (!clientId) { window.alert("Choose a client."); return; }
+    if (!content.trim()) { window.alert("Write the note."); return; }
+    const row = { client_id: clientId, kind, note_date: noteDate || toKey(TODAY), content: content.trim() };
+    const { error } = note
+      ? await supabase.from("client_notes").update(row).eq("id", note.id)
+      : await supabase.from("client_notes").insert({ ...row, author_id: user.id });
+    if (error) { window.alert(`Couldn't save note: ${error.message}`); return; }
+    await onSaved();
+    onClose();
+  }
+  async function remove() {
+    if (!window.confirm("Delete this note?")) return;
+    await supabase.from("client_notes").delete().eq("id", note.id);
+    await onSaved();
+    onClose();
+  }
+  return (
+    <Modal title={note ? "Edit note" : "Add note"} onClose={onClose} width={460}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {!fixedClientId && (
+          <Field label="Client">
+            <select style={inputStyle} value={clientId} onChange={(e) => setClientId(e.target.value)}>
+              <option value="">— choose —</option>
+              {clients.filter((c) => c.active || c.id === clientId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="Type">
+            <select style={inputStyle} value={kind} onChange={(e) => setKind(e.target.value)}>
+              {Object.entries(NOTE_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="Date">
+            <input type="date" style={inputStyle} value={noteDate} onChange={(e) => setNoteDate(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Note">
+          <textarea style={{ ...textareaStyle, minHeight: 110 }} value={content} onChange={(e) => setContent(e.target.value)} placeholder="What was discussed / agreed / sent" autoFocus />
+        </Field>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+          <div>{note && (note.authorId === user.id || user.role === "admin") && <Btn variant="ghost" size="sm" icon={Trash2} onClick={remove}>Delete</Btn>}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+            <Btn onClick={save}>{note ? "Save" : "Add note"}</Btn>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// One task list used in three places: the client card, the admin Tasks
+// page and the employee's My Tasks page.
+function TaskList({ user, tasks, clients, employees, onEdit, onQuickStatus, showClient = true, showAssignee = true, onOpenCard }) {
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "Unassigned";
+  const clientLabel = (id) => clients.find((c) => c.id === id)?.name || "—";
+  const sorted = [...tasks].sort((a, b) => {
+    const rank = (t) => t.status === "done" ? 3 : taskIsOverdue(t) ? 0 : t.dueDate ? 1 : 2;
+    return rank(a) - rank(b) || (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || (a.priority === "high" ? -1 : 1);
+  });
+  if (sorted.length === 0) return <EmptyState icon={ListChecks} title="No tasks" />;
+  return (
+    <TableShell headers={["Due", "Task", ...(showClient ? ["Client"] : []), ...(showAssignee ? ["Assigned to"] : []), "Priority", "Status", ""]}>
+      {sorted.map((t) => {
+        const overdue = taskIsOverdue(t);
+        return (
+          <tr key={t.id} style={{ opacity: t.status === "done" ? 0.55 : 1 }}>
+            <Td mono style={{ color: overdue ? C.danger : t.dueDate ? undefined : C.inkFaint }}>{t.dueDate || "—"}</Td>
+            <Td title={t.description || undefined}>
+              <div style={{ fontWeight: 600 }}>{t.kind === "onboarding" && <span style={{ fontFamily: mono, fontSize: 10, color: C.warn, marginRight: 6 }}>{(t.stage || "setup").toUpperCase()}</span>}{t.title}</div>
+              {t.description && <div style={{ fontSize: 11.5, color: C.inkMuted, marginTop: 2, maxWidth: 420, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description}</div>}
+            </Td>
+            {showClient && <Td>{t.clientId ? (onOpenCard ? <button onClick={() => onOpenCard(t.clientId)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 13, color: C.accentDark, textDecoration: "underline" }}>{clientLabel(t.clientId)}</button> : clientLabel(t.clientId)) : <span style={{ color: C.inkFaint }}>—</span>}</Td>}
+            {showAssignee && <Td>{empName(t.assignedTo)}{t.assignedTo === user.id ? <span style={{ color: C.inkFaint }}> (me)</span> : null}</Td>}
+            <Td><Badge tone={TASK_PRIORITY_TONE[t.priority]}>{TASK_PRIORITIES[t.priority]}</Badge></Td>
+            <Td><Badge tone={overdue ? "danger" : TASK_STATUS_TONE[t.status]}>{overdue ? "Overdue" : TASK_STATUSES[t.status]}</Badge></Td>
+            <Td right>
+              <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                {t.status === "open" && <Btn size="sm" variant="ghost" onClick={() => onQuickStatus(t, "in_progress")}>Start</Btn>}
+                {t.status !== "done" && <Btn size="sm" variant="secondary" icon={Check} onClick={() => onQuickStatus(t, "done")}>Done</Btn>}
+                {t.status === "done" && <Btn size="sm" variant="ghost" onClick={() => onQuickStatus(t, "open")}>Reopen</Btn>}
+                <Btn size="sm" variant="ghost" icon={Pencil} onClick={() => onEdit(t)}>Edit</Btn>
+              </div>
+            </Td>
+          </tr>
+        );
+      })}
+    </TableShell>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tasks page — admin ("all") sees every task; employees ("mine") see the  */
+/* tasks assigned to them and can create tasks and client notes.          */
+/* ---------------------------------------------------------------------- */
+
+function TasksPage({ user, mode, tasks, clients, employees, notes, refetchTasks, refetchNotes, onOpenCard, templates = [], refetchTemplates }) {
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [tplEditing, setTplEditing] = useState(null); // null | "new" | template
+  const [tplTitle, setTplTitle] = useState(""); const [tplDesc, setTplDesc] = useState(""); const [tplDays, setTplDays] = useState("7"); const [tplOrder, setTplOrder] = useState(""); const [tplStage, setTplStage] = useState("setup"); const [tplApplies, setTplApplies] = useState("all");
+  function openTpl(t) { setTplEditing(t || "new"); setTplTitle(t?.title || ""); setTplDesc(t?.description || ""); setTplDays(String(t?.dueDays ?? 7)); setTplOrder(String(t?.sortOrder ?? (templates.length + 1))); setTplStage(t?.stage || "setup"); setTplApplies(t?.appliesTo || "all"); }
+  async function saveTpl() {
+    if (!tplTitle.trim()) { window.alert("Enter a title."); return; }
+    const row = { title: tplTitle.trim(), description: tplDesc.trim() || null, due_days: Number(tplDays) || 0, sort_order: Number(tplOrder) || 0, stage: tplStage, applies_to: tplApplies };
+    const { error } = tplEditing === "new" ? await supabase.from("onboarding_templates").insert(row) : await supabase.from("onboarding_templates").update(row).eq("id", tplEditing.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    await refetchTemplates(); setTplEditing(null);
+  }
+  async function toggleTpl(t) { await supabase.from("onboarding_templates").update({ active: !t.active }).eq("id", t.id); refetchTemplates(); }
+  async function deleteTpl(t) { if (!window.confirm(`Delete "${t.title}" from the checklist? Existing clients' tasks are not affected.`)) return; await supabase.from("onboarding_templates").delete().eq("id", t.id); refetchTemplates(); }
+  const [assigneeFilter, setAssigneeFilter] = useState(mode === "mine" ? user.id : "all");
+  const [clientFilter, setClientFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("open");
+  const [taskModal, setTaskModal] = useState(null); // null | "new" | task
+  const [noteModal, setNoteModal] = useState(false);
+
+  const visible = tasks
+    .filter((t) => mode === "all" || t.assignedTo === user.id || t.createdBy === user.id)
+    .filter((t) => assigneeFilter === "all" || (assigneeFilter === "unassigned" ? !t.assignedTo : t.assignedTo === assigneeFilter))
+    .filter((t) => clientFilter === "all" || t.clientId === clientFilter)
+    .filter((t) => statusFilter === "all" || (statusFilter === "open" ? t.status !== "done" : statusFilter === "overdue" ? taskIsOverdue(t) : t.status === statusFilter));
+
+  async function quickStatus(t, status) {
+    const { error } = await supabase.from("tasks").update({ status, done_at: status === "done" ? toKey(TODAY) : null }).eq("id", t.id);
+    if (error) { window.alert(`Couldn't update: ${error.message}`); return; }
+    refetchTasks();
+  }
+  const myOpen = tasks.filter((t) => t.assignedTo === user.id && t.status !== "done");
+  const myOverdue = myOpen.filter(taskIsOverdue);
+  const recentNotes = mode === "mine" ? notes.filter((n) => n.authorId === user.id).sort((a, b) => b.noteDate.localeCompare(a.noteDate)).slice(0, 8) : [];
+
+  return (
+    <div>
+      <PageHeader title={mode === "all" ? "Tasks" : "My Tasks"} sub={mode === "all" ? "Every task across clients and people." : "Tasks assigned to you, plus anything you created. You can also log a client note from here."}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            {mode === "all" && <Btn variant="secondary" icon={ListChecks} onClick={() => setShowTemplates((v) => !v)}>{showTemplates ? "Hide checklist" : "Onboarding checklist"}</Btn>}
+            <Btn variant="secondary" icon={MessageSquare} onClick={() => setNoteModal(true)}>Add client note</Btn>
+            <Btn icon={Plus} onClick={() => setTaskModal("new")}>New task</Btn>
+          </div>
+        } />
+
+      {mode === "all" && showTemplates && (
+        <Panel style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Onboarding checklist template</div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Created for every client when onboarding starts (the "Company formation" stage only when you say the company is newly formed). Due date = start + days. The client goes live when all of them are done.</div>
+            </div>
+            <Btn size="sm" icon={Plus} onClick={() => openTpl(null)}>Add item</Btn>
+          </div>
+          <TableShell headers={["Stage", "#", "Task", "Details", "Applies to", "Due (days)", "Active", ""]}>
+            {[...templates].sort((a, b) => ONBOARDING_STAGES.findIndex((x) => x.key === a.stage) - ONBOARDING_STAGES.findIndex((x) => x.key === b.stage) || a.sortOrder - b.sortOrder).map((t) => (
+              <tr key={t.id} style={{ opacity: t.active ? 1 : 0.5 }}>
+                <Td style={{ color: C.inkMuted, fontSize: 12 }}>{stageLabel(t.stage)}</Td>
+                <Td mono>{t.sortOrder}</Td>
+                <Td style={{ fontWeight: 600 }}>{t.title}</Td>
+                <Td style={{ color: C.inkMuted }}>{t.description || "—"}</Td>
+                <Td style={{ fontSize: 12, color: t.appliesTo === "all" ? C.inkMuted : C.warn }}>{APPLIES_TO_LABELS[t.appliesTo] || t.appliesTo}</Td>
+                <Td mono>+{t.dueDays}</Td>
+                <Td>{t.active ? <Badge tone="accent">Active</Badge> : <Badge tone="neutral">Off</Badge>}</Td>
+                <Td right>
+                  <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                    <Btn size="sm" variant="ghost" icon={Pencil} onClick={() => openTpl(t)}>Edit</Btn>
+                    <Btn size="sm" variant="ghost" onClick={() => toggleTpl(t)}>{t.active ? "Disable" : "Enable"}</Btn>
+                    <Btn size="sm" variant="ghost" icon={Trash2} onClick={() => deleteTpl(t)}>Delete</Btn>
+                  </div>
+                </Td>
+              </tr>
+            ))}
+          </TableShell>
+          {tplEditing && (
+            <Modal title={tplEditing === "new" ? "Add checklist item" : "Edit checklist item"} onClose={() => setTplEditing(null)} width={440}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Field label="Stage">
+                  <select style={inputStyle} value={tplStage} onChange={(e) => setTplStage(e.target.value)}>
+                    {ONBOARDING_STAGES.map((st) => <option key={st.key} value={st.key}>{st.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Applies to">
+                  <select style={inputStyle} value={tplApplies} onChange={(e) => setTplApplies(e.target.value)}>
+                    {Object.entries(APPLIES_TO_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                </Field>
+                <Field label="Task title"><input style={inputStyle} value={tplTitle} onChange={(e) => setTplTitle(e.target.value)} autoFocus /></Field>
+                <Field label="Details (optional)"><input style={inputStyle} value={tplDesc} onChange={(e) => setTplDesc(e.target.value)} /></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="Due: days after start"><input type="number" min="0" style={inputStyle} value={tplDays} onChange={(e) => setTplDays(e.target.value)} /></Field>
+                  <Field label="Order"><input type="number" min="0" style={inputStyle} value={tplOrder} onChange={(e) => setTplOrder(e.target.value)} /></Field>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <Btn variant="secondary" onClick={() => setTplEditing(null)}>Cancel</Btn>
+                  <Btn onClick={saveTpl}>Save</Btn>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </Panel>
+      )}
+
+      {mode === "mine" && (
+        <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+          <StatCard label="My open tasks" value={String(myOpen.length)} sub="Assigned to me, not done" />
+          <StatCard label="Overdue" value={String(myOverdue.length)} accent={myOverdue.length > 0 ? C.danger : C.accent} sub="Past due date" />
+          <StatCard label="Due this week" value={String(myOpen.filter((t) => t.dueDate && !taskIsOverdue(t) && fromKey(t.dueDate) <= addDays(TODAY, 7)).length)} sub="Next 7 days" />
+        </div>
+      )}
+
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          {mode === "all" && (
+            <Field label="Assigned to">
+              <select style={{ ...inputStyle, width: 180 }} value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
+                <option value="all">Everyone</option>
+                <option value="unassigned">Unassigned</option>
+                {employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Client">
+            <select style={{ ...inputStyle, width: 190 }} value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}>
+              <option value="all">All clients</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select style={{ ...inputStyle, width: 160 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="open">Open (not done)</option>
+              <option value="overdue">Overdue</option>
+              <option value="all">All</option>
+              {Object.entries(TASK_STATUSES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+        </div>
+        <TaskList user={user} tasks={visible} clients={clients} employees={employees} onEdit={(t) => setTaskModal(t)} onQuickStatus={quickStatus} onOpenCard={onOpenCard} />
+      </Panel>
+
+      {mode === "mine" && recentNotes.length > 0 && (
+        <Panel>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 10 }}>My recent client notes</div>
+          {recentNotes.map((n) => (
+            <div key={n.id} style={{ display: "flex", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.border}`, fontFamily: sans, fontSize: 12.5 }}>
+              <span style={{ fontFamily: mono, color: C.inkMuted, minWidth: 80 }}>{n.noteDate}</span>
+              <Badge tone="neutral">{NOTE_KINDS[n.kind]}</Badge>
+              <span style={{ fontWeight: 600, minWidth: 140 }}>{clients.find((c) => c.id === n.clientId)?.name || "—"}</span>
+              <span style={{ color: C.ink, flex: 1 }}>{n.content}</span>
+            </div>
+          ))}
+        </Panel>
+      )}
+
+      {taskModal && <TaskModal user={user} task={taskModal === "new" ? null : taskModal} clients={clients} employees={employees} onClose={() => setTaskModal(null)} onSaved={refetchTasks} />}
+      {noteModal && <NoteModal user={user} clients={clients} onClose={() => setNoteModal(false)} onSaved={refetchNotes} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Client card — Fees & hours tab (the single place for billing terms)     */
+/* ---------------------------------------------------------------------- */
+
+function ClientFeesTab({ client, entries, employees, refetchClients }) {
+  const [viewPeriod, setViewPeriod] = useState("month");
+  const [viewAnchor, setViewAnchor] = useState(TODAY);
+  const cur = currentFeeOf(client);
+  const blankForm = () => ({
+    fixedFee: client.fixedFee ?? "", effectiveDate: toKey(TODAY), endDate: client.endDate || "",
+    split: Object.fromEntries(COST_CENTERS.map((cc) => [cc, cur.feeSplit?.[cc] ? String(cur.feeSplit[cc]) : ""])), splitNote: cur.feeSplitNote || "",
+    alloc: Object.fromEntries(CATEGORIES.map((c) => [c, cur.allocation?.[c] ? String(cur.allocation[c]) : ""])),
+  });
+  const [form, setForm] = useState(blankForm);
+  const [editingHistId, setEditingHistId] = useState(null);
+  useEffect(() => { setForm(blankForm()); setEditingHistId(null); }, [client.id, client.fixedFee, client.feeSplitNote]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [xf, setXf] = useState({ month: toKey(TODAY).slice(0, 7), amount: "", costCenter: "accounting", note: "" });
+  const [xfEditingId, setXfEditingId] = useState(null);
+
+  const fee = form.fixedFee === "" ? null : Number(form.fixedFee);
+  const split = Object.fromEntries(COST_CENTERS.map((cc) => [cc, Number(form.split[cc]) || 0]));
+  const splitTotal = feeSplitTotal(split);
+  const remaining = (fee || 0) - splitTotal;
+  const setSplit = (cc, v) => setForm({ ...form, split: { ...form.split, [cc]: v } });
+  const setAlloc = (c, v) => setForm({ ...form, alloc: { ...form.alloc, [c]: v } });
+  const feeRow = () => ({
+    fixed_fee: fee,
+    alloc_accounting: Number(form.alloc.accounting) || 0, alloc_tax: Number(form.alloc.tax) || 0, alloc_payroll: Number(form.alloc.payroll) || 0, alloc_other: Number(form.alloc.other) || 0,
+    ...Object.fromEntries(COST_CENTERS.map((cc) => [`cc_${cc}`, split[cc] || 0])), cc_other_note: split.other > 0 ? form.splitNote.trim() : null,
+  });
+  function validate() {
+    if (fee && splitTotal > 0 && Math.abs(splitTotal - fee) > 0.01) { window.alert(`The cost-center split adds up to ${fmtEur(splitTotal)}, but the fee is ${fmtEur(fee)}.`); return false; }
+    if (!fee && splitTotal > 0) { window.alert("Enter the fixed fee first."); return false; }
+    if (split.other > 0 && !form.splitNote.trim()) { window.alert('A note is required for the "Other" part of the fee.'); return false; }
+    return true;
+  }
+  async function saveTerms() {
+    if (!validate()) return;
+    const row = { ...feeRow(), client_id: client.id, effective_date: form.effectiveDate || toKey(TODAY) };
+    const { error } = editingHistId
+      ? await supabase.from("client_fee_history").update(row).eq("id", editingHistId)
+      : await supabase.from("client_fee_history").insert(row);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    const { error: e2 } = await supabase.from("clients").update({ fixed_fee: fee, end_date: form.endDate || null }).eq("id", client.id);
+    if (e2) { window.alert(`Couldn't save: ${e2.message}`); return; }
+    await refetchClients();
+    setEditingHistId(null);
+  }
+  function editHistory(h) {
+    setEditingHistId(h.id);
+    setForm({ ...form, fixedFee: h.fixedFee ?? "", effectiveDate: h.effectiveDate, split: Object.fromEntries(COST_CENTERS.map((cc) => [cc, h.feeSplit?.[cc] ? String(h.feeSplit[cc]) : ""])), splitNote: h.feeSplitNote || "", alloc: Object.fromEntries(CATEGORIES.map((c) => [c, h.allocation?.[c] ? String(h.allocation[c]) : ""])) });
+  }
+  async function deleteHistory(h) {
+    if (!window.confirm(`Delete the fee terms effective ${h.effectiveDate}?`)) return;
+    await supabase.from("client_fee_history").delete().eq("id", h.id);
+    refetchClients();
+  }
+  async function saveExtraFee() {
+    if (!xf.month || !xf.amount || Number(xf.amount) <= 0) { window.alert("Enter the month and an amount greater than zero."); return; }
+    if (xf.costCenter === "other" && !xf.note.trim()) { window.alert('A note is required when the cost center is "Other".'); return; }
+    const row = { month: xf.month, amount: Number(xf.amount), note: xf.note.trim() || null, cost_center: xf.costCenter };
+    const { error } = xfEditingId
+      ? await supabase.from("client_extra_fees").update(row).eq("id", xfEditingId)
+      : await supabase.from("client_extra_fees").insert({ client_id: client.id, ...row });
+    if (error) { window.alert(`Couldn't save extra fee: ${error.message}`); return; }
+    await refetchClients();
+    setXf({ month: xf.month, amount: "", costCenter: xf.costCenter, note: "" }); setXfEditingId(null);
+  }
+  async function deleteExtraFee(x) {
+    if (!window.confirm(`Delete the ${fmtEur(x.amount)} extra fee of ${x.month}?`)) return;
+    await supabase.from("client_extra_fees").delete().eq("id", x.id);
+    refetchClients();
+  }
+
+  const history = [...(client.feeHistory || [])].sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
+  const extras = [...(client.extraFeeEntries || [])].sort((a, b) => b.month.localeCompare(a.month));
+  const [rStart, rEnd] = periodRange(viewPeriod, viewAnchor);
+  const periodEntries = entries.filter((e) => e.clientId === client.id && fromKey(e.date) >= rStart && fromKey(e.date) <= rEnd);
+  const metrics = periodClientMetrics(client, periodEntries, rStart, rEnd);
+  const hoursByEmployee = employees.map((emp) => ({ emp, hours: periodEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0) })).filter((x) => x.hours > 0).sort((a, b) => b.hours - a.hours);
+  const totalHours = periodEntries.reduce((s, e) => s + e.hours, 0);
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 18, alignItems: "start" }}>
+        <Panel>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>{editingHistId ? "Edit fee terms" : "Fee terms"}</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Saving with different numbers adds a new row to the history, effective from the date below — past periods are never overwritten.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Fixed monthly fee (€)"><input type="number" min="0" style={inputStyle} value={form.fixedFee} onChange={(e) => setForm({ ...form, fixedFee: e.target.value })} /></Field>
+            <Field label="Effective from"><input type="date" style={inputStyle} value={form.effectiveDate} onChange={(e) => setForm({ ...form, effectiveDate: e.target.value })} /></Field>
+            <Field label="Client end date (optional)"><input type="date" style={inputStyle} value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "12px 0 6px" }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink }}>Split of the fee by cost center (€/month)</div>
+            <div style={{ fontFamily: mono, fontSize: 11.5, color: splitTotal === 0 ? C.inkFaint : Math.abs(remaining) <= 0.01 ? C.accent : C.danger }}>
+              {splitTotal === 0 ? "No split yet" : Math.abs(remaining) <= 0.01 ? "Matches fee ✓" : remaining > 0 ? `${fmtEur(remaining)} left` : `${fmtEur(-remaining)} over`}
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+            {COST_CENTERS.map((cc) => <Field key={cc} label={COST_CENTER_LABELS[cc]}><input type="number" min="0" style={inputStyle} value={form.split[cc]} onChange={(e) => setSplit(cc, e.target.value)} placeholder="0" /></Field>)}
+          </div>
+          {Number(form.split.other) > 0 && <div style={{ marginTop: 8 }}><Field label='Note — what does "Other" cover? (required)'><input style={inputStyle} value={form.splitNote} onChange={(e) => setForm({ ...form, splitNote: e.target.value })} /></Field></div>}
+          <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, margin: "12px 0 6px" }}>Agreed monthly hours by category (workload only)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+            {CATEGORIES.map((c) => <Field key={c} label={CATEGORY_LABELS[c]}><input type="number" min="0" style={inputStyle} value={form.alloc[c]} onChange={(e) => setAlloc(c, e.target.value)} placeholder="h" /></Field>)}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+            <Btn onClick={saveTerms}>{editingHistId ? "Save changes to this row" : "Save fee terms"}</Btn>
+            {editingHistId && <Btn variant="secondary" onClick={() => { setEditingHistId(null); setForm(blankForm()); }}>Cancel edit</Btn>}
+          </div>
+
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13.5, color: C.ink, margin: "20px 0 8px" }}>Fee history</div>
+          {history.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No fee terms recorded yet.</div> : (
+            <TableShell headers={["From", "Fixed fee", "Split", "Hours alloc.", ""]}>
+              {history.map((h, i) => {
+                const to = i === 0 ? "now" : addDays(fromKey(history[i - 1].effectiveDate), -1);
+                const sp = h.feeSplit || {}; const spTotal = feeSplitTotal(sp);
+                return (
+                  <tr key={h.id} style={{ background: editingHistId === h.id ? C.accentSoft : undefined }}>
+                    <Td mono>{h.effectiveDate} → {typeof to === "string" ? to : toKey(to)}</Td>
+                    <Td mono>{h.fixedFee ? fmtEur(h.fixedFee) : "—"}</Td>
+                    <Td style={{ fontSize: 12, color: spTotal > 0 ? C.ink : C.warn }} title={COST_CENTERS.filter((cc) => sp[cc]).map((cc) => `${COST_CENTER_LABELS[cc]} ${fmtEur(sp[cc])}`).join(" · ")}>{spTotal > 0 ? COST_CENTERS.filter((cc) => sp[cc]).map((cc) => `${COST_CENTER_LABELS[cc].slice(0, 3)} ${sp[cc]}`).join(" · ") : (h.fixedFee ? "Not split" : "—")}</Td>
+                    <Td mono>{CATEGORIES.reduce((s, c) => s + (h.allocation?.[c] || 0), 0)}h</Td>
+                    <Td right><div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}><button onClick={() => editHistory(h)} style={iconBtnStyle}><Pencil size={12} color={C.inkMuted} /></button>{history.length > 1 && <button onClick={() => deleteHistory(h)} style={iconBtnStyle}><Trash2 size={12} color={C.inkMuted} /></button>}</div></Td>
+                  </tr>
+                );
+              })}
+            </TableShell>
+          )}
+        </Panel>
+
+        <div>
+          <Panel style={{ marginBottom: 18 }}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 8 }}>{xfEditingId ? "Edit extra fee" : "Add extra fee"}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <Field label="Month"><input type="month" style={inputStyle} value={xf.month} onChange={(e) => setXf({ ...xf, month: e.target.value })} /></Field>
+              <Field label="Amount (€)"><input type="number" min="0" style={inputStyle} value={xf.amount} onChange={(e) => setXf({ ...xf, amount: e.target.value })} placeholder="e.g. 150" /></Field>
+              <Field label="Cost center">
+                <select style={inputStyle} value={xf.costCenter} onChange={(e) => setXf({ ...xf, costCenter: e.target.value })}>{COST_CENTERS.map((cc) => <option key={cc} value={cc}>{COST_CENTER_LABELS[cc]}</option>)}</select>
+              </Field>
+              <Field label={xf.costCenter === "other" ? "Note (required)" : "Note"}><input style={inputStyle} value={xf.note} onChange={(e) => setXf({ ...xf, note: e.target.value })} placeholder="e.g. Extra VAT filing" /></Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <Btn size="sm" icon={Plus} onClick={saveExtraFee}>{xfEditingId ? "Save changes" : "Add extra fee"}</Btn>
+              {xfEditingId && <Btn size="sm" variant="secondary" onClick={() => { setXfEditingId(null); setXf({ ...xf, amount: "", note: "" }); }}>Cancel</Btn>}
+            </div>
+            {extras.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <TableShell headers={["Month", "Amount", "Cost center", "Note", ""]}>
+                  {extras.map((x) => (
+                    <tr key={x.id}>
+                      <Td mono>{x.month}</Td>
+                      <Td mono>{fmtEur(x.amount)}</Td>
+                      <Td style={{ fontSize: 12 }}>{costCenterLabel(x.costCenter)}</Td>
+                      <Td style={{ color: C.inkMuted, fontSize: 12 }}>{x.note || "—"}</Td>
+                      <Td right><div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}><button onClick={() => { setXfEditingId(x.id); setXf({ month: x.month, amount: String(x.amount), costCenter: x.costCenter, note: x.note || "" }); }} style={iconBtnStyle}><Pencil size={12} color={C.inkMuted} /></button><button onClick={() => deleteExtraFee(x)} style={iconBtnStyle}><Trash2 size={12} color={C.inkMuted} /></button></div></Td>
+                    </tr>
+                  ))}
+                </TableShell>
+              </div>
+            )}
+          </Panel>
+
+          <Panel>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 8 }}>Hours & revenue</div>
+            <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
+            <div style={{ display: "flex", gap: 14, margin: "12px 0", flexWrap: "wrap" }}>
+              <StatCard label="Hours" value={totalHours.toFixed(2) + "h"} sub={metrics.allocation ? `of ${metrics.allocation.toFixed(1)}h allocated` : "No allocation set"} />
+              <StatCard label="Revenue" value={fmtEur(metrics.revenue)} accent={C.accent} sub="Fixed + extra fees, accrued" />
+            </div>
+            {hoursByEmployee.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours logged in this period.</div> : (
+              <TableShell headers={["Employee", "Hours", ...CATEGORIES.map((c) => CATEGORY_LABELS[c])]}>
+                {hoursByEmployee.map(({ emp, hours }) => (
+                  <tr key={emp.id}>
+                    <Td>{emp.name}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{hours.toFixed(2)}h</Td>
+                    {CATEGORIES.map((c) => <Td key={c} mono style={{ color: C.inkMuted }}>{periodEntries.filter((e) => e.employeeId === emp.id && e.category === c).reduce((s, e) => s + e.hours, 0).toFixed(1)}</Td>)}
+                  </tr>
+                ))}
+              </TableShell>
+            )}
+          </Panel>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Client card — Documents tab (Supabase Storage uploads)                  */
+/* ---------------------------------------------------------------------- */
+
+const DOCUMENT_CATEGORIES = [
+  { key: "contract", label: "Signed agreement / engagement letter" },
+  ...AML_DOCUMENTS.map((d) => ({ key: d.key, label: `AML — ${d.label}` })),
+  { key: "authorisation", label: "Authorisation (ΑΑΔΕ / ΕΦΚΑ / ΕΡΓΑΝΗ)" },
+  { key: "other", label: "Other" },
+];
+const documentCategoryLabel = (k) => DOCUMENT_CATEGORIES.find((c) => c.key === k)?.label || k;
+
+async function uploadClientDocument(client, file, category, note, user) {
+  const safe = file.name.replace(/[^\w.\-()\u0370-\u03FF\u1F00-\u1FFF ]+/g, "_");
+  const path = `${client.id}/${Date.now()}_${safe}`;
+  const { error } = await supabase.storage.from(DOCUMENT_BUCKET).upload(path, file, { upsert: false, contentType: file.type || undefined });
+  if (error) { window.alert(`Upload failed: ${error.message}\n\nIf this says the bucket does not exist or access is denied, run the latest schema.sql in Supabase (it creates the "client-documents" bucket and its policies).`); return false; }
+  const { error: e2 } = await supabase.from("client_documents").insert({ client_id: client.id, category, file_name: file.name, file_path: path, file_size: file.size, mime_type: file.type || null, note: note || null, uploaded_by: user.id });
+  if (e2) { window.alert(`Upload saved but could not be recorded: ${e2.message}`); return false; }
+  return true;
+}
+async function openClientDocument(doc) {
+  const { data, error } = await supabase.storage.from(DOCUMENT_BUCKET).createSignedUrl(doc.filePath, 600);
+  if (error || !data?.signedUrl) { window.alert(`Couldn't open the file: ${error?.message || "no URL"}`); return; }
+  window.open(data.signedUrl, "_blank");
+}
+async function deleteClientDocument(doc) {
+  if (!window.confirm(`Delete "${doc.fileName}"? This removes the file permanently.`)) return false;
+  await supabase.storage.from(DOCUMENT_BUCKET).remove([doc.filePath]);
+  const { error } = await supabase.from("client_documents").delete().eq("id", doc.id);
+  if (error) { window.alert(`Couldn't delete: ${error.message}`); return false; }
+  return true;
+}
+
+// Small upload control: a hidden file input behind a button.
+function UploadButton({ label = "Upload", size = "sm", onFile }) {
+  const ref = React.useRef(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <input ref={ref} type="file" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (!f) return; setBusy(true); try { await onFile(f); } finally { setBusy(false); } }} />
+      <Btn size={size} variant="secondary" onClick={() => ref.current?.click()} disabled={busy}>{busy ? "Uploading…" : label}</Btn>
+    </>
+  );
+}
+
+function ClientDocumentsTab({ user, client, documents, employees, refetchDocuments }) {
+  const [category, setCategory] = useState("other");
+  const [note, setNote] = useState("");
+  const [filter, setFilter] = useState("all");
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const list = [...documents].filter((d) => filter === "all" || d.category === filter).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+  return (
+    <Panel>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+        <Field label="Category for the next upload">
+          <select style={{ ...inputStyle, width: 320 }} value={category} onChange={(e) => setCategory(e.target.value)}>
+            {DOCUMENT_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Note (optional)"><input style={{ ...inputStyle, width: 240 }} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+        <UploadButton size="md" label="Upload file" onFile={async (f) => { if (await uploadClientDocument(client, f, category, note, user)) { setNote(""); refetchDocuments(); } }} />
+        <div style={{ marginLeft: "auto" }}>
+          <Field label="Show">
+            <select style={{ ...inputStyle, width: 220 }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="all">All documents</option>
+              {DOCUMENT_CATEGORIES.filter((c) => documents.some((d) => d.category === c.key)).map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </Field>
+        </div>
+      </div>
+      {list.length === 0 ? <EmptyState icon={Receipt} title="No documents yet" sub="Upload the engagement letter, identification documents and anything else that belongs to this client's file." /> : (
+        <TableShell headers={["Uploaded", "Category", "File", "Size", "By", "Note", ""]}>
+          {list.map((d) => (
+            <tr key={d.id}>
+              <Td mono>{d.uploadedAt.slice(0, 16).replace("T", " ")}</Td>
+              <Td style={{ fontSize: 12 }}>{documentCategoryLabel(d.category)}</Td>
+              <Td><button onClick={() => openClientDocument(d)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 13, color: C.accentDark, textDecoration: "underline" }}>{d.fileName}</button></Td>
+              <Td mono style={{ color: C.inkMuted }}>{fmtBytes(d.fileSize)}</Td>
+              <Td style={{ color: C.inkMuted }}>{empName(d.uploadedBy)}</Td>
+              <Td style={{ color: C.inkMuted }}>{d.note || "—"}</Td>
+              <Td right><button onClick={async () => { if (await deleteClientDocument(d)) refetchDocuments(); }} style={iconBtnStyle} title="Delete"><Trash2 size={13} color={C.inkMuted} /></button></Td>
+            </tr>
+          ))}
+        </TableShell>
+      )}
+    </Panel>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Client card — Agreement tab (draft engagement letter from client data)  */
+/* ---------------------------------------------------------------------- */
+
+function buildAgreementHtml({ client, aml, firm, employees, contacts }) {
+  const cur = currentFeeOf(client);
+  const rep = aml?.representativeName || client.representativeName || contacts.find((c) => c.isPrimary)?.name || "[ΟΝΟΜΑΤΕΠΩΝΥΜΟ]";
+  const repId = aml?.representativeIdNumber || client.representativeIdNumber || "[ΑΔΤ]";
+  const repAfm = aml?.representativeAfm || client.representativeAfm || "[ΑΦΜ]";
+  const start = client.contractStartDate || earliestHistoryDate(client.feeHistory) || client.goLiveDate || null;
+  const signDate = client.contractSignedOn || start;
+  const services = (client.contractServicesText || CONTRACT_DEFAULT_SERVICES).split("\n").map((l) => l.trim()).filter(Boolean);
+  const e = escapeHtml;
+  let n = 0; const art = (title) => `<h2>Άρθρο ${++n} – ${e(title)}</h2>`;
+  const payroll = client.contractPayrollBaseFee ? `
+    <h3>2.2 Μισθοδοσία &amp; Εργατικά Θέματα</h3>
+    <ul><li>Ενεργοποίηση module μισθοδοσίας και διαχείριση των ${client.contractPayrollIncluded || 2} πρώτων υπαλλήλων: ${e(fmtEurGr(client.contractPayrollBaseFee))} μηνιαίως πλέον ΦΠΑ.</li>
+    ${client.contractPayrollExtraFee ? `<li>Κάθε επιπλέον υπάλληλος: ${e(fmtEurGr(client.contractPayrollExtraFee))} ανά άτομο μηνιαίως πλέον ΦΠΑ.</li>` : ""}</ul>` : "";
+  const adhoc = client.contractHourlyRate ? `
+    <h3>2.${payroll ? 3 : 2} Πρόσθετες Υπηρεσίες (ad-hoc)</h3>
+    <p>Για τυχόν εργασίες πέραν των ανωτέρω (π.χ. τροποποιήσεις καταστατικού κ.λπ.), ισχύει η παρακάτω χρέωση:</p>
+    <p><strong>Χρέωση:</strong> ${e(fmtEurGr(client.contractHourlyRate))} ανά ώρα (gross rate) πλέον ΦΠΑ.</p>` : "";
+  const notice = client.contractNoticeMonths ?? 3;
+  const noticeText = notice === 1 ? "μηνιαία" : notice === 2 ? "δίμηνη" : notice === 3 ? "τρίμηνη" : notice === 6 ? "εξάμηνη" : `${notice} μηνών`;
+  return `
+  <h1 style="text-align:center">ΣΥΜΒΑΣΗ ΠΑΡΟΧΗΣ ΛΟΓΙΣΤΙΚΩΝ &amp; ΦΟΡΟΛΟΓΙΚΩΝ ΥΠΗΡΕΣΙΩΝ</h1>
+  <p class="muted" style="text-align:center">Έκδοση ${client.contractVersion} · ${client.contractStatus === "signed" ? `Υπογράφηκε ${e(client.contractSignedOn)}` : `Σχέδιο — παράχθηκε ${new Date().toLocaleDateString("el-GR")}`}</p>
+  <p>Σήμερα, την ${e(fmtGreekDate(signDate))}, μεταξύ:</p>
+  <p>Αφενός της <strong>${e(client.name)}</strong>, με έδρα ${e(client.address || "[ΔΙΕΥΘΥΝΣΗ ΕΔΡΑΣ]")}, ΑΦΜ ${e(client.afm || "[ΑΦΜ]")}, Δ.Ο.Υ. ${e(client.doy || "[ΔΟΥ]")}, εφεξής καλούμενης «Εντολέας», με νόμιμο εκπρόσωπο τον/την ${e(rep)} με ΑΔΤ ${e(repId)} και ΑΦΜ ${e(repAfm)}</p>
+  <p>και</p>
+  <p>Αφετέρου της λογιστικής εταιρείας <strong>${e(firm.name)}</strong>, με έδρα ${e(firm.address)}, ΑΦΜ ${e(firm.afm)}, Δ.Ο.Υ. ${e(firm.doy)}, εφεξής καλούμενης «Ανάδοχος», με νόμιμο εκπρόσωπο τον ${e(firm.representative)}${firm.representativeId ? ` με ΑΔΤ ${e(firm.representativeId)}` : ""}${firm.representativeAfm ? ` και ΑΦΜ ${e(firm.representativeAfm)}` : ""},</p>
+  <p>συμφωνούνται και γίνονται αμοιβαία αποδεκτά τα ακόλουθα:</p>
+  ${art("Αντικείμενο Σύμβασης")}
+  <p>Ο Ανάδοχος αναλαμβάνει την παροχή λογιστικών, φορολογικών και οικονομικών υπηρεσιών προς τον Εντολέα, σύμφωνα με την ισχύουσα φορολογική νομοθεσία. Η συνεργασία έχει διαρκή (ongoing) χαρακτήρα, με έναρξη ισχύος την ${e(fmtGreekDate(start))}.</p>
+  ${art("Παρεχόμενες Υπηρεσίες")}
+  <h3>2.1 Λογιστική – Φορολογική – Οικονομική Υποστήριξη</h3>
+  <ul>${services.map((sv) => `<li>${e(sv)}</li>`).join("")}</ul>
+  <p><strong>Αμοιβή:</strong> ${cur.fixedFee ? `${e(fmtEurGr(cur.fixedFee))} μηνιαίως πλέον ΦΠΑ 24%.` : "[ΠΟΣΟ] μηνιαίως πλέον ΦΠΑ 24%."}</p>
+  ${payroll}${adhoc}
+  <p>Σε περίπτωση μεταβολής των παρεχόμενων υπηρεσιών η σύμβαση θα τροποποιηθεί αναλόγως.</p>
+  ${art("Οικονομικοί Όροι")}
+  <p>${e(client.contractPaymentTerms || CONTRACT_DEFAULT_PAYMENT)}</p>
+  ${art("Υποχρεώσεις Εντολέα")}
+  <p>Ο Εντολέας υποχρεούται:</p>
+  <ul><li>Να παρέχει έγκαιρα και με ακρίβεια όλα τα απαραίτητα στοιχεία και παραστατικά.</li><li>Να ενημερώνει τον Ανάδοχο για οποιαδήποτε μεταβολή αφορά τη δραστηριότητά του.</li><li>Να καταβάλλει εμπρόθεσμα τις συμφωνημένες αμοιβές.</li></ul>
+  ${art("Προστασία Προσωπικών Δεδομένων (GDPR)")}
+  <p>Τα συμβαλλόμενα μέρη δεσμεύονται να τηρούν τις διατάξεις του Γενικού Κανονισμού Προστασίας Δεδομένων (ΕΕ 2016/679 – GDPR) και της εθνικής νομοθεσίας.</p>
+  <p>Ο Ανάδοχος επεξεργάζεται προσωπικά δεδομένα αποκλειστικά και μόνο για τους σκοπούς της παρούσας σύμβασης, λαμβάνοντας όλα τα απαραίτητα τεχνικά και οργανωτικά μέτρα για την ασφάλειά τους.</p>
+  ${art("Μεταφορά Πληροφοριών")}
+  <p>Όλα τα έγγραφα και οι πληροφορίες που αφορούν τη συμβατική μας σχέση και/ή τη διαχείριση των υποθέσεων του Εντολέα (εφεξής «Πληροφορίες») διαβιβάζονται με ασφαλή τρόπο μέσω ηλεκτρονικού ταχυδρομείου, συστημένης αλληλογραφίας/ταχυμεταφοράς ή μέσω ασφαλών διαδικτυακών εργαλείων διαμοιρασμού αρχείων εγκεκριμένων από τον Ανάδοχο (ενδεικτικά OneDrive, iManage κ.λπ.). Επιπλέον, εφαρμόζονται τα ακόλουθα μέτρα:</p>
+  <p>(i) Οι πάροχοι ταχυδρομικών ή/και ταχυμεταφορικών υπηρεσιών διαθέτουν πιστοποιήσεις ποιότητας και ασφάλειας.<br/>(ii) Τηρείται αλυσίδα επιμέλειας (chain of custody) των Πληροφοριών σε όλα τα στάδια διαβίβασης.<br/>(iii) Πρόσβαση στις Πληροφορίες έχουν μόνο τα απολύτως απαραίτητα στελέχη του Αναδόχου.<br/>(iv) Εφαρμόζονται διαδικασίες ταυτοποίησης για ευαίσθητες ή/και εμπιστευτικές Πληροφορίες, εφόσον απαιτείται.<br/>(v) Χρησιμοποιείται κρυπτογράφηση ή/και προστασία με κωδικό πρόσβασης, εφόσον ζητηθεί.<br/>(vi) Όλα τα διαδικτυακά εργαλεία διαμοιρασμού αρχείων είναι εγκεκριμένα από το Τμήμα Ασφάλειας Πληροφοριών του Αναδόχου.</p>
+  ${art("Εμπιστευτικότητα & Οδηγίες")}
+  <p>Ο Εντολέας παρέχει στον Ανάδοχο τις απαραίτητες πληροφορίες για την εκτέλεση των υπηρεσιών. Ο Ανάδοχος βασίζεται στις πληροφορίες αυτές και σε δημόσια διαθέσιμες πηγές και δεν φέρει ευθύνη για την ακρίβεια ή πληρότητά τους.</p>
+  <p>Ο Εντολέας οφείλει να γνωστοποιήσει εγγράφως τα πρόσωπα που είναι εξουσιοδοτημένα να παρέχουν οδηγίες ή να λαμβάνουν συμβουλές. Επισημαίνεται ότι, βάσει της ισχύουσας νομοθεσίας, στα τιμολόγια του Αναδόχου πρέπει να αναγράφεται ακριβής περιγραφή των παρεχόμενων υπηρεσιών.</p>
+  <p>Ο Ανάδοχος τηρεί την εμπιστευτικότητα των Πληροφοριών σύμφωνα με την ελληνική νομοθεσία (ενδεικτικά: Ν.Δ. 3329/1955, Π.Δ. 226/1992, Κώδικας Δεοντολογίας ΣΟΕΛ, Ν. 3693/2008).</p>
+  ${art("Χρήση Τεχνητής Νοημοσύνης")}
+  <p>Ο Ανάδοχος δύναται να χρησιμοποιεί, κατά περίπτωση, συστήματα τεχνητής νοημοσύνης (AI), γενετικής τεχνητής νοημοσύνης ή άλλα αυτοματοποιημένα εργαλεία, αποκλειστικά για την υποστήριξη της παροχής των υπηρεσιών.</p>
+  <p>Η χρήση αυτή γίνεται σύμφωνα με την ισχύουσα νομοθεσία, τους κανόνες δεοντολογίας, το GDPR και τις υποχρεώσεις επαγγελματικής ευθύνης. Ο Ανάδοχος παραμένει αποκλειστικά υπεύθυνος για την ποιότητα, την ακρίβεια και την τελική παράδοση των υπηρεσιών, οι οποίες υπόκεινται πάντοτε σε ανθρώπινο έλεγχο και επαγγελματική κρίση.</p>
+  ${art("Νομικό Πλαίσιο")}
+  <p>Ο Ανάδοχος είναι ${e(firm.legalFormText || "Ετερόρρυθμη Εταιρεία")} που λειτουργεί σύμφωνα με το ελληνικό δίκαιο. Η ευθύνη του Αναδόχου και των στελεχών του περιορίζεται σε περιπτώσεις βαριάς αμέλειας ή δόλου.</p>
+  <p>Αποκλειστικά αρμόδια για την επίλυση κάθε διαφοράς είναι τα Δικαστήρια Αθηνών και εφαρμοστέο δίκαιο είναι το ελληνικό.</p>
+  ${art("Καταπολέμηση Δωροδοκίας & Διαφθοράς")}
+  <p>Ο Ανάδοχος εφαρμόζει πολιτική μηδενικής ανοχής σε πράξεις δωροδοκίας ή διαφθοράς και συμμορφώνεται πλήρως με την ισχύουσα νομοθεσία. Αντίστοιχη συμμόρφωση αναμένεται και από τον Εντολέα.</p>
+  ${client.contractIncludeAml ? `${art("Δέουσα Επιμέλεια (ν. 4557/2018)")}
+  <p>Ο Ανάδοχος, ως υπόχρεο πρόσωπο κατά τον ν. 4557/2018, εφαρμόζει μέτρα δέουσας επιμέλειας ως προς τον Εντολέα: ταυτοποίηση και επαλήθευση του Εντολέα, του νομίμου εκπροσώπου και των πραγματικών δικαιούχων, καταγραφή του σκοπού και της φύσης της συνεργασίας και συνεχή παρακολούθηση. Ο Εντολέας παρέχει τα έγγραφα της ΠΟΛ.1200/2018 και το αποδεικτικό καταχώρισης στο Κεντρικό Μητρώο Πραγματικών Δικαιούχων και γνωστοποιεί κάθε μεταβολή των στοιχείων του ή των πραγματικών δικαιούχων εντός εξήντα (60) ημερών. Ο Εντολέας ενημερώθηκε, κατά το άρθρο 31 παρ. 2 του ν. 4557/2018, για την επεξεργασία των δεδομένων του για τους σκοπούς αυτούς και για την τήρησή τους επί πέντε (5) έτη μετά τη λήξη της συνεργασίας. Σε αδυναμία ολοκλήρωσης της ταυτοποίησης, ο Ανάδοχος δύναται να μη συνάψει ή να διακόψει τη συνεργασία (άρθρο 13 παρ. 2).</p>` : ""}
+  ${client.contractSpecialTerms ? `${art("Ειδικοί Όροι")}<p>${e(client.contractSpecialTerms).replace(/\n/g, "<br/>")}</p>` : ""}
+  ${art("Λύση της Σύμβασης")}
+  <p>Ο Εντολέας δύναται να καταγγείλει τη σύμβαση οποτεδήποτε, με έγγραφη καταγγελία και με ${e(noticeText)} προειδοποίηση.</p>
+  <p>Ο Ανάδοχος δύναται να καταγγείλει τη σύμβαση σύμφωνα με τους κανόνες επαγγελματικής δεοντολογίας, αντιστοίχως με έγγραφη καταγγελία και με ${e(noticeText)} προειδοποίηση.</p>
+  <p>Η λύση της σύμβασης δεν απαλλάσσει τον Εντολέα από την υποχρέωση εξόφλησης δεδουλευμένων αμοιβών και εξόδων. Η παράδοση των αρχείων πραγματοποιείται μετά την τακτοποίηση των σχετικών οφειλών.</p>
+  <p style="margin-top:28px">Οι συμβαλλόμενοι,</p>
+  <div class="sig"><div><strong>Ο Εντολέας</strong><br/>${e(rep.toUpperCase())}</div><div><strong>Ο Ανάδοχος</strong><br/>${e((firm.representative || firm.name).toUpperCase())}</div></div>
+  <div class="footer">Παράχθηκε από το GLORIA στις ${new Date().toLocaleString("el-GR")} · ${client.contractStatus === "signed" ? "Τελικό κείμενο" : "Σχέδιο — δεν έχει υπογραφεί"}</div>`;
+}
+
+function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, contacts, ubos, documents, refetchClients, refetchDocuments }) {
+  const fromClient = () => ({
+    special: client.contractSpecialTerms || "", payment: client.contractPaymentTerms || "", servicesText: client.contractServicesText || CONTRACT_DEFAULT_SERVICES,
+    payrollBase: client.contractPayrollBaseFee ?? "", payrollIncluded: client.contractPayrollIncluded ?? "", payrollExtra: client.contractPayrollExtraFee ?? "",
+    hourlyRate: client.contractHourlyRate ?? "", noticeMonths: client.contractNoticeMonths ?? 3, includeAml: client.contractIncludeAml !== false, startDate: client.contractStartDate || earliestHistoryDate(client.feeHistory) || "",
+  });
+  const [t, setT] = useState(fromClient);
+  const [firmEdit, setFirmEdit] = useState(null);
+  useEffect(() => { setT(fromClient()); }, [client.id, client.contractStatus, client.contractVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = JSON.stringify(t) !== JSON.stringify(fromClient());
+  const special = t.special, payment = t.payment;
+  const num = (v) => v === "" || v === null || v === undefined ? null : Number(v);
+  const termsPatch = () => ({
+    contract_special_terms: t.special.trim() || null, contract_payment_terms: t.payment.trim() || null, contract_services_text: t.servicesText.trim() === CONTRACT_DEFAULT_SERVICES.trim() ? null : (t.servicesText.trim() || null),
+    contract_payroll_base_fee: num(t.payrollBase), contract_payroll_included: num(t.payrollIncluded), contract_payroll_extra_fee: num(t.payrollExtra), contract_hourly_rate: num(t.hourlyRate),
+    contract_notice_months: num(t.noticeMonths), contract_include_aml: !!t.includeAml, contract_start_date: t.startDate || null,
+  });
+  const previewClient = { ...client, contractSpecialTerms: t.special, contractPaymentTerms: t.payment, contractServicesText: t.servicesText, contractPayrollBaseFee: num(t.payrollBase), contractPayrollIncluded: num(t.payrollIncluded), contractPayrollExtraFee: num(t.payrollExtra), contractHourlyRate: num(t.hourlyRate), contractNoticeMonths: num(t.noticeMonths), contractIncludeAml: !!t.includeAml, contractStartDate: t.startDate || null };
+  const signedDocs = documents.filter((d) => d.category === "contract");
+  const cur = currentFeeOf(client);
+  const missing = [];
+  if (!client.afm) missing.push("client ΑΦΜ");
+  if (!client.address) missing.push("client address");
+  if (!aml?.representativeName && !client.representativeName) missing.push("legal representative (Details tab)");
+  if (!aml?.representativeIdNumber && !client.representativeIdNumber) missing.push("representative ΑΔΤ (Details tab)");
+  if (!cur.fixedFee) missing.push("fixed fee (Fees tab)");
+
+  async function saveTerms(extra = {}) {
+    const { error } = await supabase.from("clients").update({ ...termsPatch(), ...extra }).eq("id", client.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    refetchClients();
+  }
+  async function setStatus(status) {
+    const patch = { contract_status: status };
+    if (status === "signed") { const d = window.prompt("Signing date (YYYY-MM-DD)", client.contractSignedOn || toKey(TODAY)); if (d === null) return; patch.contract_signed_on = d || toKey(TODAY); }
+    if (status === "draft" && client.contractStatus === "signed") patch.contract_version = client.contractVersion + 1;
+    await saveTerms(patch);
+  }
+  const preview = () => printHtml(`Σύμβαση — ${client.name}`, buildAgreementHtml({ client: previewClient, aml, firm: { ...DEFAULT_FIRM, ...firm }, employees, contacts }), { draft: client.contractStatus !== "signed" });
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatCard label="Agreement" value={CONTRACT_STATUS_LABELS[client.contractStatus]} accent={client.contractStatus === "signed" ? C.accent : client.contractStatus === "none" ? undefined : C.warn} sub={client.contractSignedOn ? `Signed ${client.contractSignedOn} · v${client.contractVersion}` : `Version ${client.contractVersion}`} />
+        <StatCard label="Monthly fee in the draft" value={cur.fixedFee ? fmtEur(cur.fixedFee) : "—"} sub="From the Fees tab" />
+        <StatCard label="Signed copy on file" value={signedDocs.length ? "Yes" : "No"} accent={signedDocs.length ? C.accent : C.warn} sub={signedDocs.length ? signedDocs[0].fileName : "Upload under Documents → Signed agreement"} />
+      </div>
+      <Panel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 640 }}>
+            The draft is generated from the client card (details, representative, services from due diligence, fee from Fees). It carries a DRAFT watermark until you mark it signed.
+            {missing.length > 0 && <div style={{ color: C.warn, marginTop: 4 }}>Missing for a complete draft: {missing.join(", ")}.</div>}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="secondary" onClick={() => setFirmEdit({ ...DEFAULT_FIRM, ...firm })}>Firm details</Btn>
+            <Btn icon={Receipt} onClick={preview}>Preview / Save as PDF</Btn>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <Field label="Start of services (Άρθρο 1)"><input type="date" style={inputStyle} value={t.startDate} onChange={(e) => setT({ ...t, startDate: e.target.value })} /></Field>
+          <Field label="Notice period, months (Άρθρο 11)"><input type="number" min="0" style={inputStyle} value={t.noticeMonths} onChange={(e) => setT({ ...t, noticeMonths: e.target.value })} /></Field>
+          <Field label="Monthly fee (from Fees tab)"><input style={{ ...inputStyle, background: C.bg }} value={cur.fixedFee ? fmtEurGr(cur.fixedFee) + " πλέον ΦΠΑ" : "—"} readOnly /></Field>
+          <div style={{ gridColumn: "1 / span 3" }}><Field label="2.1 Services — one per line"><textarea style={{ ...textareaStyle, minHeight: 120 }} value={t.servicesText} onChange={(e) => setT({ ...t, servicesText: e.target.value })} /></Field></div>
+          <Field label="2.2 Payroll module — monthly fee (€, empty = no payroll article)"><input type="number" min="0" style={inputStyle} value={t.payrollBase} onChange={(e) => setT({ ...t, payrollBase: e.target.value })} placeholder="e.g. 50" /></Field>
+          <Field label="2.2 Employees included"><input type="number" min="0" style={inputStyle} value={t.payrollIncluded} onChange={(e) => setT({ ...t, payrollIncluded: e.target.value })} placeholder="e.g. 2" /></Field>
+          <Field label="2.2 Each extra employee (€/month)"><input type="number" min="0" style={inputStyle} value={t.payrollExtra} onChange={(e) => setT({ ...t, payrollExtra: e.target.value })} placeholder="e.g. 15" /></Field>
+          <Field label="2.3 Ad-hoc hourly rate (€, empty = no ad-hoc article)"><input type="number" min="0" style={inputStyle} value={t.hourlyRate} onChange={(e) => setT({ ...t, hourlyRate: e.target.value })} placeholder="e.g. 50" /></Field>
+          <div style={{ gridColumn: "2 / span 2" }}><Field label="Άρθρο 3 — invoicing & payment terms (empty = template clause)"><input style={inputStyle} value={t.payment} onChange={(e) => setT({ ...t, payment: e.target.value })} placeholder={CONTRACT_DEFAULT_PAYMENT} /></Field></div>
+          <div style={{ gridColumn: "1 / span 3" }}><Field label="Special terms (optional — added as a separate article)"><textarea style={{ ...textareaStyle, minHeight: 70 }} value={t.special} onChange={(e) => setT({ ...t, special: e.target.value })} /></Field></div>
+          <label style={{ gridColumn: "1 / span 3", display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink }}><input type="checkbox" checked={!!t.includeAml} onChange={(e) => setT({ ...t, includeAml: e.target.checked })} /> Include the due-diligence article (ν. 4557/2018) — recommended by the compliance guide</label>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <Btn onClick={() => saveTerms()} disabled={!dirty}>Save terms</Btn>
+          <span style={{ width: 1, height: 22, background: C.border, margin: "0 6px" }} />
+          {client.contractStatus === "none" && <Btn variant="secondary" onClick={() => setStatus("draft")}>Mark as draft</Btn>}
+          {(client.contractStatus === "draft") && <Btn variant="secondary" onClick={() => setStatus("sent")}>Mark as sent for signature</Btn>}
+          {(client.contractStatus === "draft" || client.contractStatus === "sent") && <Btn variant="secondary" icon={Check} onClick={() => setStatus("signed")}>Mark as signed</Btn>}
+          {client.contractStatus === "signed" && <Btn variant="ghost" onClick={() => setStatus("draft")}>New version (back to draft)</Btn>}
+          {dirty && <span style={{ fontFamily: sans, fontSize: 12, color: C.warn }}>Unsaved changes</span>}
+        </div>
+      </Panel>
+      {firmEdit && (
+        <Modal title="Firm details (used in every agreement)" onClose={() => setFirmEdit(null)} width={480}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[["name", "Firm name"], ["legalFormText", "Legal form (as written in Άρθρο 9)"], ["afm", "ΑΦΜ"], ["doy", "ΔΟΥ"], ["gemi", "ΓΕΜΗ"], ["representative", "Legal representative"], ["representativeId", "Representative ΑΔΤ"], ["representativeAfm", "Representative ΑΦΜ"], ["email", "Email"], ["phone", "Phone"]].map(([k, l]) => (
+              <Field key={k} label={l}><input style={inputStyle} value={firmEdit[k] || ""} onChange={(e) => setFirmEdit({ ...firmEdit, [k]: e.target.value })} /></Field>
+            ))}
+            <div style={{ gridColumn: "1 / span 2" }}><Field label="Address (seat)"><input style={inputStyle} value={firmEdit.address || ""} onChange={(e) => setFirmEdit({ ...firmEdit, address: e.target.value })} /></Field></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn variant="secondary" onClick={() => setFirmEdit(null)}>Cancel</Btn><Btn onClick={async () => { await saveFirm(firmEdit); setFirmEdit(null); }}>Save</Btn></div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Due diligence file as printable PDF (time-stamped)                      */
+/* ---------------------------------------------------------------------- */
+
+function buildDueDiligenceHtml({ client, aml, ubos, documents, employees, tasks }) {
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const kv = (rows) => `<table class="kv">${rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v || "—")}</td></tr>`).join("")}</table>`;
+  const a = aml || {};
+  const assessed = amlAssess(a.riskFactors || []);
+  const level = a.riskLevel || assessed.level;
+  const chosen = AML_RISK_FACTORS.filter((f) => (a.riskFactors || []).includes(f.key));
+  const docsForType = AML_DOCUMENTS.filter((d) => d.types.includes(a.entityType || amlEntityTypeFor(client.legalForm)));
+  const files = documents.filter((d) => d.category !== "other" && d.category !== "authorisation");
+  const amlTasks = tasks.filter((t) => t.clientId === client.id && t.kind === "onboarding" && t.stage === "aml");
+  const now = new Date();
+  return `
+  <h1>Φάκελος δέουσας επιμέλειας πελάτη — ${escapeHtml(client.name)}</h1>
+  <p class="muted">ν. 4557/2018 · ΠΟΛ.1200/2018 · Εκτύπωση: ${now.toLocaleString("el-GR")} · Κατάσταση φακέλου: ${escapeHtml(AML_STATUS_LABELS[a.status || "not_started"])}${a.completedOn ? ` (${a.completedOn}, ${escapeHtml(empName(a.completedBy))})` : ""}</p>
+  <h2>1. Ταυτοποίηση πελάτη</h2>
+  ${kv([["Επωνυμία", client.name], ["Νομική μορφή · Πίνακας ΠΟΛ.1200", `${client.legalForm || "—"} · ${AML_ENTITY_TYPES[a.entityType || amlEntityTypeFor(client.legalForm)]}`], ["ΑΦΜ / ΔΟΥ", [client.afm, client.doy].filter(Boolean).join(" / ")], ["ΓΕΜΗ · Ίδρυση", [a.gemiNumber, a.incorporationDate].filter(Boolean).join(" · ")], ["Έδρα", client.address], ["Νόμιμος εκπρόσωπος", a.representativeName], ["ΑΦΜ εκπροσώπου", a.representativeAfm], ["Έγγραφο ταυτότητας", [a.representativeIdType, a.representativeIdNumber].filter(Boolean).join(" · ")], ["Εξουσιοδοτημένο πρόσωπο", a.proxyName ? `${a.proxyName} · ${a.proxyIdNumber || ""}` : "Δεν ενεργεί μέσω τρίτου"]])}
+  <h2>2. Πραγματικοί δικαιούχοι</h2>
+  ${ubos.length === 0 ? "<p>Δεν έχουν καταχωριστεί.</p>" : `<table><tr><th>Ονοματεπώνυμο</th><th>ΑΦΜ / Ταυτότητα</th><th>Εθνικότητα · Κατοικία</th><th>Ποσοστό / έλεγχος</th><th>ΠΕΠ</th><th>Επαλήθευση</th></tr>${ubos.map((u) => `<tr><td>${escapeHtml(u.name)}</td><td>${escapeHtml([u.afm, u.idNumber].filter(Boolean).join(" / "))}</td><td>${escapeHtml([u.nationality, u.residenceCountry].filter(Boolean).join(" · "))}</td><td>${u.ownershipPct !== null ? u.ownershipPct + "%" : ""} ${escapeHtml(u.controlType || "")}</td><td>${u.isPep ? "ΝΑΙ" : "Όχι"}</td><td>${escapeHtml([u.verifiedOn, u.verificationDoc].filter(Boolean).join(" · ") || "Μη επαληθευμένος")}</td></tr>`).join("")}</table>`}
+  ${a.uboActionsRecord ? `<p><strong>Αρχείο ενεργειών (άρ. 3 παρ. 17 αβ΄):</strong> ${escapeHtml(a.uboActionsRecord)}</p>` : ""}
+  <h2>3. Έλεγχος ΠΕΠ και κυρώσεων</h2>
+  ${kv([["ΠΕΠ", a.pepStatus && a.pepStatus !== "none" ? `ΝΑΙ — ${a.pepStatus} · ${a.pepDetails || ""}` : "Όχι"], ["Έλεγχος λιστών", a.sanctionsCheckedOn], ["Αποτέλεσμα", a.sanctionsResult]])}
+  <h2>4. Σκοπός και φύση της σχέσης</h2>
+  ${kv([["Δραστηριότητα", a.activity], ["Χώρες", a.countries], ["Υπηρεσίες", (a.services || []).join(", ")], ["Σκοπός / αναμενόμενη συναλλακτική εικόνα", a.relationshipPurpose], ["Πηγές πληροφοριών", a.infoSources], ["Πηγή πλούτου / προέλευση κεφαλαίων", a.sourceOfFunds]])}
+  <h2>5. Αξιολόγηση κινδύνου (Μοντέλο Α — 4 άξονες)</h2>
+  <table><tr><th>Άξονας</th><th>Παράγοντας</th><th>Παράρτημα / διάταξη</th><th>Βαθμοί</th></tr>${chosen.length === 0 ? "<tr><td colspan='4'>Κανένας παράγοντας</td></tr>" : chosen.map((f) => `<tr><td>${f.axis}</td><td>${escapeHtml(f.label)}</td><td>${escapeHtml(f.ref)}</td><td>${f.override ? "ΥΠΕΡΙΣΧΥΕΙ" : (f.points > 0 ? "+" : "") + f.points}</td></tr>`).join("")}</table>
+  ${kv([["Άθροισμα", `${assessed.score >= 0 ? "+" : ""}${assessed.score}`], ["Κατάταξη", `${AML_LEVEL_LABELS[level]}${a.riskOverride && !assessed.forced ? ` (τεκμηριωμένη απόκλιση από ${AML_LEVEL_LABELS[assessed.level]}: ${a.riskOverrideReason || ""})` : ""}`], ["Επίπεδο δέουσας επιμέλειας", AML_DD_LABELS[a.ddLevel || AML_DD_FOR_LEVEL[level]]], ["Έγκριση ανώτερου στελέχους", a.approvedBy ? `${empName(a.approvedBy)} · ${a.approvedOn || ""}` : (level === "high" ? "ΕΚΚΡΕΜΕΙ" : "Δεν απαιτείται")]])}
+  <h2>6. Έγγραφα φακέλου</h2>
+  <table><tr><th>Έγγραφο</th><th>Συλλέχθηκε</th><th>Ημερομηνία</th><th>Αρχείο στο σύστημα</th></tr>${docsForType.map((d) => { const st = (a.documents || {})[d.key] || {}; const f = files.filter((x) => x.category === d.key); return `<tr><td>${escapeHtml(d.label)}</td><td>${st.collected ? "ΝΑΙ" : "—"}</td><td>${escapeHtml(st.date || "")}</td><td>${f.map((x) => `${escapeHtml(x.fileName)} (${x.uploadedAt.slice(0, 10)})`).join("<br/>") || "—"}</td></tr>`; }).join("")}</table>
+  <h2>7. Βήματα διαδικασίας</h2>
+  ${amlTasks.length === 0 ? "<p>Δεν δημιουργήθηκαν tasks δέουσας επιμέλειας.</p>" : `<table><tr><th>Βήμα</th><th>Ανατέθηκε</th><th>Προθεσμία</th><th>Κατάσταση</th><th>Ολοκληρώθηκε</th></tr>${amlTasks.map((t) => `<tr><td>${escapeHtml(t.title)}</td><td>${escapeHtml(empName(t.assignedTo))}</td><td>${escapeHtml(t.dueDate || "")}</td><td>${escapeHtml(TASK_STATUSES[t.status])}</td><td>${escapeHtml(t.doneAt || "")}</td></tr>`).join("")}</table>`}
+  <h2>8. Απόφαση και επανεξέταση</h2>
+  ${kv([["Απόφαση", a.decision === "accept" ? "Ανάληψη" : a.decision === "decline" ? `Άρνηση — ${a.decisionReason || ""}` : "Εκκρεμεί"], ["Ολοκλήρωση φακέλου", a.completedOn ? `${a.completedOn} · ${empName(a.completedBy)}` : "—"], ["Επόμενη επικαιροποίηση", a.nextReviewOn], ["Σημειώσεις", a.notes]])}
+  <div class="sig"><div>Υπεύθυνος συμμόρφωσης<br/>${escapeHtml(empName(a.completedBy))}</div><div>Ημερομηνία<br/>${escapeHtml(a.completedOn || "")}</div></div>
+  <div class="footer">Το παρόν αποτελεί εκτύπωση του ηλεκτρονικού φακέλου του πελάτη από το GLORIA την ${now.toLocaleString("el-GR")}. Τηρείται για 5 έτη μετά τη λήξη της επιχειρηματικής σχέσης (άρ. 30 ν. 4557/2018).</div>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Client card — Due diligence tab (KYC / AML, ν. 4557/2018)                */
+/* Structure follows the Taxheaven guide's new-client flow (Β.8) and risk  */
+/* model (Β.5.2), with documents per ΠΟΛ.1200/2018 tables A–D.             */
+/* ---------------------------------------------------------------------- */
+
+function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents = [], refetchDocuments, refetchDueDiligence, refetchTasks }) {
+  const defaultEntity = amlEntityTypeFor(client.legalForm);
+  const blank = {
+    clientId: client.id, clientType: defaultEntity === "natural" ? "natural" : "legal", entityType: defaultEntity, gemiNumber: "", incorporationDate: "",
+    representativeName: client.representativeName || "", representativeIdType: client.representativeIdType || "", representativeIdNumber: client.representativeIdNumber || "", representativeAfm: client.representativeAfm || "", activity: "", countries: "Ελλάδα",
+    relationshipPurpose: "", infoSources: "", services: [], sourceOfFunds: "", pepStatus: "none", pepDetails: "", sanctionsCheckedOn: "", sanctionsResult: "",
+    proxyName: "", proxyIdNumber: "", riskFactors: ["b_eu"], riskScore: 0, riskLevel: "medium", riskOverride: "", riskOverrideReason: "", ddLevel: "standard", documents: {},
+    status: "not_started", completedOn: "", completedBy: null, approvedBy: null, approvedOn: "", nextReviewOn: "", notes: "", decision: "", decisionReason: "", uboActionsRecord: "",
+  };
+  const withRep = (a) => ({ ...a, entityType: a.entityType || defaultEntity, representativeName: a.representativeName || client.representativeName || "", representativeAfm: a.representativeAfm || client.representativeAfm || "", representativeIdType: a.representativeIdType || client.representativeIdType || "", representativeIdNumber: a.representativeIdNumber || client.representativeIdNumber || "" });
+  const init = aml ? withRep(aml) : blank;
+  const [f, setF] = useState(init);
+  useEffect(() => { setF(aml ? withRep(aml) : blank); }, [aml?.clientId, client.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [uboModal, setUboModal] = useState(null);
+  const [u, setU] = useState({});
+
+  const assessed = amlAssess(f.riskFactors);
+  const effectiveLevel = assessed.forced ? "high" : (f.riskOverride || assessed.level);
+  const ddLevel = AML_DD_FOR_LEVEL[effectiveLevel];
+  const isLegal = f.entityType !== "natural";
+  const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
+  const toggleFactor = (k) => set({ riskFactors: f.riskFactors.includes(k) ? f.riskFactors.filter((x) => x !== k) : [...f.riskFactors, k] });
+  const toggleService = (k) => set({ services: f.services.includes(k) ? f.services.filter((x) => x !== k) : [...f.services, k] });
+  const setDoc = (k, patch) => set({ documents: { ...f.documents, [k]: { ...(f.documents[k] || {}), ...patch } } });
+  const docsForType = AML_DOCUMENTS.filter((d) => d.types.includes(f.entityType));
+  const docsRequired = docsForType.filter((d) => !d.optional && (!d.enhancedOnly || ddLevel === "enhanced"));
+  const docsCollected = docsRequired.filter((d) => f.documents[d.key]?.collected).length;
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const dirty = JSON.stringify(f) !== JSON.stringify(init);
+
+  async function save(extra = {}) {
+    const row = {
+      client_id: client.id, client_type: isLegal ? "legal" : "natural", entity_type: f.entityType, gemi_number: f.gemiNumber || null, incorporation_date: f.incorporationDate || null,
+      representative_name: f.representativeName || null, representative_id_type: f.representativeIdType || null, representative_id_number: f.representativeIdNumber || null, representative_afm: f.representativeAfm || null,
+      activity: f.activity || null, countries: f.countries || null, relationship_purpose: f.relationshipPurpose || null, info_sources: f.infoSources || null, services: f.services,
+      source_of_funds: f.sourceOfFunds || null, pep_status: f.pepStatus, pep_details: f.pepDetails || null, sanctions_checked_on: f.sanctionsCheckedOn || null, sanctions_result: f.sanctionsResult || null,
+      proxy_name: f.proxyName || null, proxy_id_number: f.proxyIdNumber || null,
+      risk_factors: f.riskFactors, risk_score: assessed.score, risk_level: effectiveLevel, risk_override: f.riskOverride || null, risk_override_reason: f.riskOverrideReason || null,
+      dd_level: ddLevel, documents: f.documents, status: f.status === "not_started" ? "in_progress" : f.status,
+      completed_on: f.completedOn || null, completed_by: f.completedBy || null, approved_by: f.approvedBy || null, approved_on: f.approvedOn || null,
+      next_review_on: f.nextReviewOn || null, notes: f.notes || null, decision: f.decision || null, decision_reason: f.decisionReason || null, ubo_actions_record: f.uboActionsRecord || null,
+      updated_at: new Date().toISOString(), ...extra,
+    };
+    const { error } = await supabase.from("client_aml").upsert(row, { onConflict: "client_id" });
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return false; }
+    // The representative lives on the client card too — keep both in step.
+    await supabase.from("clients").update({ representative_name: f.representativeName || null, representative_afm: f.representativeAfm || null, representative_id_type: f.representativeIdType || null, representative_id_number: f.representativeIdNumber || null }).eq("id", client.id);
+    await refetchDueDiligence();
+    return true;
+  }
+  function checklist() {
+    const missing = [];
+    if (!f.representativeName) missing.push("identification of the client / legal representative");
+    if (isLegal && ubos.length === 0 && !f.riskFactors.includes("a_ubo_unknown")) missing.push("at least one beneficial owner");
+    if (isLegal && !f.documents.ubo_registry?.collected) missing.push("proof of UBO register entry");
+    if (!f.sanctionsCheckedOn) missing.push("PEP / sanctions check date");
+    if (!f.relationshipPurpose) missing.push("purpose & nature of the relationship");
+    if (!f.infoSources) missing.push("sources of the information");
+    if (effectiveLevel === "high" && !f.approvedBy) missing.push("senior approval for high risk");
+    if (ddLevel === "enhanced" && !f.sourceOfFunds) missing.push("source of wealth / origin of funds");
+    const docsMissing = docsRequired.filter((d) => !f.documents[d.key]?.collected).length;
+    if (docsMissing) missing.push(`${docsMissing} required document(s)`);
+    return missing;
+  }
+  async function complete() {
+    const missing = checklist();
+    if (missing.length && !window.confirm(`Still missing: ${missing.join("; ")}.\n\nComplete the file anyway? (άρ. 14 παρ. 2 allows verification to finish shortly after the initial contact only where the risk is low.)`)) return;
+    const review = new Date(TODAY); review.setMonth(review.getMonth() + AML_REVIEW_MONTHS[effectiveLevel]);
+    const ok = await save({ status: "completed", decision: "accept", completed_on: toKey(TODAY), completed_by: user.id, next_review_on: f.nextReviewOn || toKey(review) });
+    if (!ok) return;
+    const open = tasks.filter((t) => t.clientId === client.id && t.kind === "onboarding" && t.stage === "aml" && t.status !== "done");
+    if (open.length && window.confirm(`Also mark the ${open.length} due-diligence task(s) of the checklist as done?`)) {
+      for (const t of open) await supabase.from("tasks").update({ status: "done", done_at: toKey(TODAY) }).eq("id", t.id);
+      refetchTasks();
+    }
+  }
+  async function decline() {
+    const reason = window.prompt("Reason for declining the engagement (άρ. 13 παρ. 2 — identification, UBO or purpose could not be completed). This is kept on file, and you should consider whether a report to the Authority is due.", f.decisionReason || "");
+    if (reason === null) return;
+    await save({ status: "declined", decision: "decline", decision_reason: reason, completed_on: toKey(TODAY), completed_by: user.id });
+  }
+  async function reopen() { await save({ status: "in_progress", decision: null, completed_on: null, completed_by: null }); }
+
+  function openUbo(x) { setUboModal(x || "new"); setU(x ? { ...x } : { name: "", afm: "", idNumber: "", nationality: "Ελληνική", residenceCountry: "Ελλάδα", ownershipPct: "", controlType: "Ownership", isPep: false, verifiedOn: "", verificationDoc: "", note: "" }); }
+  async function saveUbo() {
+    if (!u.name?.trim()) { window.alert("Enter the beneficial owner's name."); return; }
+    const row = { client_id: client.id, name: u.name.trim(), afm: u.afm || null, id_number: u.idNumber || null, nationality: u.nationality || null, residence_country: u.residenceCountry || null, ownership_pct: u.ownershipPct === "" || u.ownershipPct === null ? null : Number(u.ownershipPct), control_type: u.controlType || null, is_pep: !!u.isPep, verified_on: u.verifiedOn || null, verification_doc: u.verificationDoc || null, note: u.note || null };
+    const { error } = uboModal === "new" ? await supabase.from("client_beneficial_owners").insert(row) : await supabase.from("client_beneficial_owners").update(row).eq("id", uboModal.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    if (u.isPep && !f.riskFactors.includes("a_pep")) set({ riskFactors: [...f.riskFactors, "a_pep"], pepStatus: f.pepStatus === "none" ? "ubo" : f.pepStatus });
+    await refetchDueDiligence(); setUboModal(null);
+  }
+  async function deleteUbo(x) { if (!window.confirm(`Remove ${x.name}?`)) return; await supabase.from("client_beneficial_owners").delete().eq("id", x.id); refetchDueDiligence(); }
+
+  const section = (n, title, sub) => (
+    <div style={{ marginTop: 20, marginBottom: 10, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+      <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13.5, color: C.ink }}><span style={{ fontFamily: mono, color: C.accentDark, marginRight: 8 }}>{n}</span>{title}</div>
+      {sub && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const grid2 = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 };
+  const missingNow = checklist();
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatCard label="Due diligence file" value={AML_STATUS_LABELS[f.status]} accent={f.status === "completed" ? C.accent : f.status === "declined" ? C.danger : f.status === "in_progress" ? C.warn : undefined} sub={f.completedOn ? `${f.completedOn} · ${empName(f.completedBy)}` : "ν. 4557/2018 · ΠΟΛ.1200/2018"} />
+        <StatCard label="Risk classification" value={AML_LEVEL_LABELS[effectiveLevel]} accent={effectiveLevel === "high" ? C.danger : effectiveLevel === "medium" ? C.warn : C.accent} sub={`Sum ${assessed.score >= 0 ? "+" : ""}${assessed.score}${assessed.forced ? " · override case" : ""}${f.riskOverride && !assessed.forced ? " · manually set" : ""}`} />
+        <StatCard label="Due diligence level" value={AML_DD_LABELS[ddLevel].split(" ")[0]} sub={AML_DD_LABELS[ddLevel]} />
+        <StatCard label="Documents" value={`${docsCollected}/${docsRequired.length}`} sub={`Required for ${AML_ENTITY_TYPES[f.entityType].split(" (")[0]}`} accent={docsCollected < docsRequired.length ? C.warn : C.accent} />
+        <StatCard label="Next review" value={f.nextReviewOn || "—"} accent={f.nextReviewOn && fromKey(f.nextReviewOn) < TODAY ? C.danger : undefined} sub={`At least every ${AML_REVIEW_MONTHS[effectiveLevel]} months${effectiveLevel === "high" ? " and on every change" : ""}`} />
+      </div>
+
+      <Panel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 640 }}>
+            Identification and verification must be completed <strong>before</strong> the relationship starts (άρ. 14 παρ. 1). Keep this file for 5 years after the relationship ends (άρ. 30). Managers only.
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`Due diligence — ${client.name}`, buildDueDiligenceHtml({ client, aml: aml ? { ...aml, ...f } : f, ubos, documents, employees, tasks }))}>Download PDF</Btn>
+            <Btn variant="secondary" onClick={() => save()} disabled={!dirty}>Save</Btn>
+            {f.status !== "completed" && f.status !== "declined" && <Btn variant="ghost" onClick={decline}>Decline engagement</Btn>}
+            {f.status !== "completed" && f.status !== "declined" ? <Btn icon={Check} onClick={complete}>Complete file</Btn> : <Btn variant="ghost" onClick={reopen}>Reopen</Btn>}
+          </div>
+        </div>
+        {missingNow.length > 0 && f.status !== "completed" && (
+          <div style={{ marginTop: 10, fontFamily: sans, fontSize: 12.5, color: C.warn }}>Open items: {missingNow.join(" · ")}</div>
+        )}
+
+        {section("1", "Identification of the client (ΠΟΛ.1200/2018)", "Choose the table that applies; the document list in section 6 follows it. The legal representative is shared with the client's Details tab. If the client acts through an authorised person, that person is identified too.")}
+        <div style={grid2}>
+          <Field label="Entity type">
+            <select style={inputStyle} value={f.entityType} onChange={(e) => set({ entityType: e.target.value })}>
+              {Object.entries(AML_ENTITY_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="ΑΦΜ (from client details)"><input style={{ ...inputStyle, background: C.bg }} value={client.afm || ""} readOnly /></Field>
+          {isLegal && <>
+            <Field label="ΓΕΜΗ number"><input style={inputStyle} value={f.gemiNumber} onChange={(e) => set({ gemiNumber: e.target.value })} /></Field>
+            <Field label="Incorporation date"><input type="date" style={inputStyle} value={f.incorporationDate} onChange={(e) => set({ incorporationDate: e.target.value })} /></Field>
+          </>}
+          <Field label={isLegal ? "Legal representative — full name & father's name" : "Full name & father's name"}><input style={inputStyle} value={f.representativeName} onChange={(e) => set({ representativeName: e.target.value })} /></Field>
+          <Field label="Representative ΑΦΜ"><input style={inputStyle} value={f.representativeAfm} onChange={(e) => set({ representativeAfm: e.target.value })} /></Field>
+          <Field label="ID document type">
+            <select style={inputStyle} value={f.representativeIdType} onChange={(e) => set({ representativeIdType: e.target.value })}>
+              <option value="">—</option><option>Δελτίο ταυτότητας</option><option>Διαβατήριο</option><option>Άδεια διαμονής</option><option>Ταυτότητα ομογενούς</option><option>Υπηρεσιακή ταυτότητα</option>
+            </select>
+          </Field>
+          <Field label="ID number · issuing authority"><input style={inputStyle} value={f.representativeIdNumber} onChange={(e) => set({ representativeIdNumber: e.target.value })} placeholder="e.g. ΑΚ 123456 · Τ.Α. Χαλανδρίου" /></Field>
+          <Field label="Authorised person / proxy (if any) — name"><input style={inputStyle} value={f.proxyName} onChange={(e) => set({ proxyName: e.target.value, riskFactors: e.target.value && !f.riskFactors.includes("d_proxy") ? [...f.riskFactors, "d_proxy"] : f.riskFactors })} /></Field>
+          <Field label="Proxy ID number & authorisation"><input style={inputStyle} value={f.proxyIdNumber} onChange={(e) => set({ proxyIdNumber: e.target.value })} disabled={!f.proxyName} /></Field>
+        </div>
+
+        {isLegal && <>
+          {section("2–3", "Beneficial owners & ownership structure", "Natural persons with >25% or control. Proof of entry in the Central UBO Register is required (άρ. 14 παρ. 1) but is never sufficient on its own (άρ. 12 παρ. 4): map the structure from the shareholder register and go up a level wherever >25% belongs to another entity.")}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}><Btn size="sm" icon={Plus} onClick={() => openUbo(null)}>Add beneficial owner</Btn></div>
+          {ubos.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.warn }}>No beneficial owners recorded yet.</div> : (
+            <TableShell headers={["Name", "ΑΦΜ / ID", "Nationality · residence", "Ownership / control", "PEP", "Verified", ""]}>
+              {ubos.map((x) => (
+                <tr key={x.id}>
+                  <Td style={{ fontWeight: 600 }}>{x.name}</Td>
+                  <Td mono>{[x.afm, x.idNumber].filter(Boolean).join(" / ") || "—"}</Td>
+                  <Td style={{ color: C.inkMuted }}>{[x.nationality, x.residenceCountry].filter(Boolean).join(" · ") || "—"}</Td>
+                  <Td mono>{x.ownershipPct !== null ? `${x.ownershipPct}%` : "—"}{x.controlType ? <span style={{ color: C.inkMuted, fontFamily: sans }}> · {x.controlType}</span> : null}</Td>
+                  <Td>{x.isPep ? <Badge tone="danger">PEP</Badge> : <span style={{ color: C.inkFaint }}>No</span>}</Td>
+                  <Td mono style={{ color: x.verifiedOn ? C.ink : C.warn }}>{x.verifiedOn || "Not verified"}</Td>
+                  <Td right><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><Btn size="sm" variant="ghost" icon={Pencil} onClick={() => openUbo(x)}>Edit</Btn><Btn size="sm" variant="ghost" icon={Trash2} onClick={() => deleteUbo(x)}>Remove</Btn></div></Td>
+                </tr>
+              ))}
+            </TableShell>
+          )}
+          <div style={{ marginTop: 10 }}>
+            <Field label="If no natural person could be identified: senior managing official treated as UBO — record of actions taken and difficulties (άρ. 3 παρ. 17 αβ΄)">
+              <textarea style={textareaStyle} value={f.uboActionsRecord} onChange={(e) => set({ uboActionsRecord: e.target.value, riskFactors: e.target.value && !f.riskFactors.includes("a_ubo_unknown") ? [...f.riskFactors, "a_ubo_unknown"] : f.riskFactors })} placeholder="Leave empty when the beneficial owners above were identified." />
+            </Field>
+          </div>
+        </>}
+
+        {section("4", "PEP and sanctions screening", "Client, legal representative, beneficial owners, and their close relatives and close associates. A PEP forces enhanced due diligence (άρ. 18).")}
+        <div style={grid2}>
+          <Field label="Politically exposed person?">
+            <select style={inputStyle} value={f.pepStatus} onChange={(e) => { const v = e.target.value; set({ pepStatus: v, riskFactors: v === "none" ? f.riskFactors.filter((k) => k !== "a_pep") : (f.riskFactors.includes("a_pep") ? f.riskFactors : [...f.riskFactors, "a_pep"]) }); }}>
+              <option value="none">No</option><option value="client">Yes — the client</option><option value="ubo">Yes — a beneficial owner</option><option value="representative">Yes — the representative / close associate</option>
+            </select>
+          </Field>
+          <Field label="PEP details (position, country, relationship)"><input style={inputStyle} value={f.pepDetails} onChange={(e) => set({ pepDetails: e.target.value })} disabled={f.pepStatus === "none"} /></Field>
+          <Field label="Lists checked on"><input type="date" style={inputStyle} value={f.sanctionsCheckedOn} onChange={(e) => set({ sanctionsCheckedOn: e.target.value })} /></Field>
+          <Field label="Result"><input style={inputStyle} value={f.sanctionsResult} onChange={(e) => set({ sanctionsResult: e.target.value })} placeholder="e.g. No match — EU/UN sanctions, PEP lists" /></Field>
+        </div>
+
+        {section("5", "Purpose and nature of the relationship", "Half a page per client: activity, our services, why they came to us, expected transaction profile — and where each piece of information came from (audit question 23).")}
+        <div style={grid2}>
+          <Field label="Activity / sector (ΚΑΔ, description)"><input style={inputStyle} value={f.activity} onChange={(e) => set({ activity: e.target.value })} /></Field>
+          <Field label="Countries (seat, shareholders, UBO, counterparties)"><input style={inputStyle} value={f.countries} onChange={(e) => set({ countries: e.target.value })} /></Field>
+          <div style={{ gridColumn: "1 / span 2" }}><Field label="Purpose, why they approached us, expected transaction profile"><textarea style={textareaStyle} value={f.relationshipPurpose} onChange={(e) => set({ relationshipPurpose: e.target.value })} /></Field></div>
+          <div style={{ gridColumn: "1 / span 2" }}><Field label="Sources of the information (client declaration, ΓΕΜΗ, ΑΑΔΕ registration, website, prior returns, bank)"><input style={inputStyle} value={f.infoSources} onChange={(e) => set({ infoSources: e.target.value })} /></Field></div>
+          <div style={{ gridColumn: "1 / span 2" }}>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 6 }}>Services we provide (an engagement letter describing them covers most of this)</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {AML_SERVICES.map((sv) => (
+                <label key={sv} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: sans, fontSize: 12.5, color: C.ink, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 9px", background: f.services.includes(sv) ? C.accentSoft : C.surface, cursor: "pointer" }}>
+                  <input type="checkbox" checked={f.services.includes(sv)} onChange={() => toggleService(sv)} />{sv}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div style={{ gridColumn: "1 / span 2" }}><Field label={`Source of wealth / origin of funds${ddLevel === "enhanced" ? " (required — enhanced due diligence)" : " (optional at this level)"}`}><textarea style={textareaStyle} value={f.sourceOfFunds} onChange={(e) => set({ sourceOfFunds: e.target.value })} /></Field></div>
+        </div>
+
+        {section("6", "Risk scoring (Model A — four axes)", "Start from standard due diligence. Annex I factors subtract, Annex II add; ≤0 with an Annex I factor → low; +1 to +5 → medium; ≥+6 or any override case → high.")}
+        {AML_AXES.map((ax) => (
+          <div key={ax.key} style={{ marginBottom: 10 }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.inkMuted, margin: "8px 0 4px" }}>{ax.label}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+              {AML_RISK_FACTORS.filter((rf) => rf.axis === ax.key).map((rf) => {
+                const on = f.riskFactors.includes(rf.key);
+                return (
+                  <label key={rf.key} style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink, padding: "4px 8px", borderRadius: 6, background: on ? (rf.override ? "#FDECEC" : C.accentSoft) : "transparent", cursor: "pointer" }}>
+                    <input type="checkbox" checked={on} onChange={() => toggleFactor(rf.key)} />
+                    <span style={{ flex: 1 }}>{rf.label}</span>
+                    <span style={{ fontFamily: mono, fontSize: 11, color: rf.override ? C.danger : rf.points < 0 ? C.accentDark : C.inkFaint, whiteSpace: "nowrap" }}>{rf.override ? "OVERRIDE" : (rf.points > 0 ? "+" : "") + rf.points} · {rf.ref}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div style={{ ...grid2, marginTop: 12 }}>
+          <div style={{ fontFamily: sans, fontSize: 13, color: C.ink, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            Sum <span style={{ fontFamily: mono, fontWeight: 700 }}>{assessed.score >= 0 ? "+" : ""}{assessed.score}</span>
+            {assessed.forced && <Badge tone="danger">Override: {assessed.overrides.map((o) => o.ref).join(", ")}</Badge>}
+            → <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_LEVEL_LABELS[effectiveLevel]} risk</Badge> <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_DD_LABELS[ddLevel]}</Badge>
+          </div>
+          <Field label="Documented deviation from the computed level (optional, reason required)">
+            <div style={{ display: "flex", gap: 8 }}>
+              <select style={{ ...inputStyle, width: 130 }} value={f.riskOverride} onChange={(e) => set({ riskOverride: e.target.value })} disabled={assessed.forced}>
+                <option value="">Computed</option>{Object.entries(AML_LEVEL_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <input style={inputStyle} value={f.riskOverrideReason} onChange={(e) => set({ riskOverrideReason: e.target.value })} placeholder="Why the factor does not raise the risk in this case" disabled={!f.riskOverride || assessed.forced} />
+            </div>
+          </Field>
+          {effectiveLevel === "high" && <>
+            <Field label="High risk — approval of senior management before engagement">
+              <select style={inputStyle} value={f.approvedBy || ""} onChange={(e) => set({ approvedBy: e.target.value || null, approvedOn: e.target.value ? (f.approvedOn || toKey(TODAY)) : "" })}>
+                <option value="">— not approved yet —</option>
+                {employees.filter((e) => e.role === "admin").map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Approved on"><input type="date" style={inputStyle} value={f.approvedOn} onChange={(e) => set({ approvedOn: e.target.value })} /></Field>
+          </>}
+        </div>
+
+        {section("7", `Documents on file — ${AML_ENTITY_TYPES[f.entityType]}`, `${docsCollected} of ${docsRequired.length} required collected`)}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {docsForType.map((d) => {
+            const st = f.documents[d.key] || {};
+            const needed = !d.optional && (!d.enhancedOnly || ddLevel === "enhanced");
+            const files = documents.filter((x) => x.category === d.key);
+            return (
+              <div key={d.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, background: st.collected ? C.accentSoft : "transparent", opacity: needed ? 1 : 0.6, flexWrap: "wrap" }}>
+                <input type="checkbox" checked={!!st.collected} onChange={(e) => setDoc(d.key, { collected: e.target.checked, date: e.target.checked ? (st.date || toKey(TODAY)) : "" })} />
+                <span style={{ flex: 1, fontFamily: sans, fontSize: 12.5, color: C.ink, minWidth: 220 }}>{d.label}{!needed ? " — optional" : ""}
+                  {files.map((x) => <div key={x.id} style={{ fontSize: 11.5 }}><button onClick={() => openClientDocument(x)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 11.5, color: C.accentDark, textDecoration: "underline" }}>{x.fileName}</button> <span style={{ color: C.inkFaint }}>{x.uploadedAt.slice(0, 10)}</span></div>)}
+                </span>
+                <input type="date" style={{ ...inputStyle, width: 140, padding: "4px 6px", fontSize: 12 }} value={st.date || ""} onChange={(e) => setDoc(d.key, { date: e.target.value })} disabled={!st.collected} />
+                <UploadButton label={files.length ? "Upload another" : "Upload"} onFile={async (file) => { if (await uploadClientDocument(client, file, d.key, "", user)) { setDoc(d.key, { collected: true, date: st.date || toKey(TODAY) }); refetchDocuments && refetchDocuments(); } }} />
+              </div>
+            );
+          })}
+        </div>
+
+        {section("8", "Decision, file and next review", "Accepting opens the file and sets the review date; declining is recorded with its reason (άρ. 13 παρ. 2).")}
+        <div style={grid2}>
+          <Field label="Next periodic review"><input type="date" style={inputStyle} value={f.nextReviewOn} onChange={(e) => set({ nextReviewOn: e.target.value })} /></Field>
+          <Field label="Status"><div style={{ paddingTop: 7 }}><Badge tone={AML_STATUS_TONE[f.status]}>{AML_STATUS_LABELS[f.status]}</Badge>{f.completedOn ? <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginLeft: 8 }}>{f.completedOn} · {empName(f.completedBy)}</span> : null}</div></Field>
+          {f.status === "declined" && <div style={{ gridColumn: "1 / span 2", fontFamily: sans, fontSize: 12.5, color: C.danger }}>Declined: {f.decisionReason || "—"}</div>}
+          <div style={{ gridColumn: "1 / span 2" }}><Field label="Notes / conclusions of the compliance officer"><textarea style={textareaStyle} value={f.notes} onChange={(e) => set({ notes: e.target.value })} /></Field></div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
+          <Btn onClick={() => save()} disabled={!dirty}>Save</Btn>
+          {dirty && <span style={{ fontFamily: sans, fontSize: 12, color: C.warn }}>Unsaved changes</span>}
+        </div>
+      </Panel>
+
+      {uboModal && (
+        <Modal title={uboModal === "new" ? "Add beneficial owner" : "Edit beneficial owner"} onClose={() => setUboModal(null)} width={460}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Full name & father's name"><input style={inputStyle} value={u.name} onChange={(e) => setU({ ...u, name: e.target.value })} autoFocus /></Field>
+            <div style={grid2}>
+              <Field label="ΑΦΜ"><input style={inputStyle} value={u.afm} onChange={(e) => setU({ ...u, afm: e.target.value })} /></Field>
+              <Field label="ID / passport number"><input style={inputStyle} value={u.idNumber} onChange={(e) => setU({ ...u, idNumber: e.target.value })} /></Field>
+              <Field label="Nationality"><input style={inputStyle} value={u.nationality} onChange={(e) => setU({ ...u, nationality: e.target.value })} /></Field>
+              <Field label="Country of residence"><input style={inputStyle} value={u.residenceCountry} onChange={(e) => setU({ ...u, residenceCountry: e.target.value })} /></Field>
+              <Field label="Ownership %"><input type="number" min="0" max="100" style={inputStyle} value={u.ownershipPct ?? ""} onChange={(e) => setU({ ...u, ownershipPct: e.target.value })} /></Field>
+              <Field label="Type of control">
+                <select style={inputStyle} value={u.controlType} onChange={(e) => setU({ ...u, controlType: e.target.value })}>
+                  <option>Ownership</option><option>Voting rights</option><option>Indirect (via entity)</option><option>Senior managing official</option><option>Trust — settlor/trustee/protector/beneficiary</option><option>Other control</option>
+                </select>
+              </Field>
+              <Field label="Verified on"><input type="date" style={inputStyle} value={u.verifiedOn} onChange={(e) => setU({ ...u, verifiedOn: e.target.value })} /></Field>
+              <Field label="Verification document"><input style={inputStyle} value={u.verificationDoc} onChange={(e) => setU({ ...u, verificationDoc: e.target.value })} placeholder="e.g. ID copy + ΚΜΠΔ extract 10/2026" /></Field>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, color: C.ink }}><input type="checkbox" checked={!!u.isPep} onChange={(e) => setU({ ...u, isPep: e.target.checked })} /> PEP, close relative or close associate</label>
+            <Field label="Note"><input style={inputStyle} value={u.note} onChange={(e) => setU({ ...u, note: e.target.value })} /></Field>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}><Btn variant="secondary" onClick={() => setUboModal(null)}>Cancel</Btn><Btn onClick={saveUbo}>Save</Btn></div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Client card — profile, contacts, notes & communication, tasks           */
+/* ---------------------------------------------------------------------- */
+
+const formFromClient = (c) => ({ name: c.name, afm: c.afm, doy: c.doy, legalForm: c.legalForm, address: c.address, email: c.email, phone: c.phone, accountManagerId: c.accountManagerId || "", generalNotes: c.generalNotes,
+  representativeName: c.representativeName, representativeAfm: c.representativeAfm, representativeIdType: c.representativeIdType, representativeIdNumber: c.representativeIdNumber, representativeEmail: c.representativeEmail, representativePhone: c.representativePhone });
+function ClientCard({ user, client, employees, contacts, notes, tasks, entries, templates = [], aml = null, ubos = [], refetchDueDiligence, documents = [], refetchDocuments, firm = DEFAULT_FIRM, saveFirm, initialTab = "details", refetchClients, refetchContacts, refetchNotes, refetchTasks, onBack }) {
+  const [tab, setTab] = useState(initialTab);
+  useEffect(() => { setTab(initialTab); }, [initialTab, client?.id]);
+  const [form, setForm] = useState(null);
+  const [contactModal, setContactModal] = useState(null); // null | "new" | contact
+  const [cName, setCName] = useState(""); const [cRole, setCRole] = useState(""); const [cEmail, setCEmail] = useState(""); const [cPhone, setCPhone] = useState(""); const [cNote, setCNote] = useState(""); const [cPrimary, setCPrimary] = useState(false);
+  const [noteModal, setNoteModal] = useState(null); // null | "new" | note
+  const [taskModal, setTaskModal] = useState(null);
+
+  useEffect(() => {
+    if (!client) return;
+    setForm(formFromClient(client));
+  }, [client?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!client || !form) return <div><Btn variant="ghost" icon={ArrowLeft} onClick={onBack}>Back to clients</Btn><EmptyState icon={Building2} title="Client not found" /></div>;
+
+  const myContacts = contacts.filter((x) => x.clientId === client.id).sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0) || a.name.localeCompare(b.name));
+  const myNotes = notes.filter((n) => n.clientId === client.id).sort((a, b) => b.noteDate.localeCompare(a.noteDate) || b.createdAt.localeCompare(a.createdAt));
+  const myTasks = tasks.filter((t) => t.clientId === client.id);
+  const openTasks = myTasks.filter((t) => t.status !== "done");
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const dirty = JSON.stringify(form) !== JSON.stringify(formFromClient(client));
+
+  // Quick activity figures for the header: hours & revenue year to date.
+  const yearStart = new Date(TODAY.getFullYear(), 0, 1);
+  const ytdEntries = entries.filter((e) => e.clientId === client.id && fromKey(e.date) >= yearStart && fromKey(e.date) <= TODAY);
+  const ytdHours = ytdEntries.reduce((s, e) => s + e.hours, 0);
+  const ytdRevenue = periodClientMetrics(client, ytdEntries, yearStart, TODAY).revenue;
+
+  async function saveDetails() {
+    if (!form.name.trim()) { window.alert("The client needs a name."); return; }
+    const { error } = await supabase.from("clients").update({
+      name: form.name.trim(), afm: form.afm.trim() || null, doy: form.doy.trim() || null, legal_form: form.legalForm || null,
+      address: form.address.trim() || null, email: form.email.trim() || null, phone: form.phone.trim() || null,
+      account_manager_id: form.accountManagerId || null, general_notes: form.generalNotes.trim() || null,
+      representative_name: form.representativeName.trim() || null, representative_afm: form.representativeAfm.trim() || null, representative_id_type: form.representativeIdType || null, representative_id_number: form.representativeIdNumber.trim() || null,
+      representative_email: form.representativeEmail.trim() || null, representative_phone: form.representativePhone.trim() || null,
+    }).eq("id", client.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    // Keep the due-diligence record in step: it shows the same person.
+    if (aml) await supabase.from("client_aml").update({ representative_name: form.representativeName.trim() || null, representative_afm: form.representativeAfm.trim() || null, representative_id_type: form.representativeIdType || null, representative_id_number: form.representativeIdNumber.trim() || null }).eq("client_id", client.id);
+    refetchClients(); if (aml && refetchDueDiligence) refetchDueDiligence();
+  }
+  function openContact(x) {
+    setContactModal(x || "new");
+    setCName(x?.name || ""); setCRole(x?.role || ""); setCEmail(x?.email || ""); setCPhone(x?.phone || ""); setCNote(x?.note || ""); setCPrimary(x ? x.isPrimary : myContacts.length === 0);
+  }
+  async function saveContact() {
+    if (!cName.trim()) { window.alert("Enter the contact's name."); return; }
+    const row = { client_id: client.id, name: cName.trim(), role: cRole.trim() || null, email: cEmail.trim() || null, phone: cPhone.trim() || null, note: cNote.trim() || null, is_primary: cPrimary };
+    if (cPrimary) await supabase.from("client_contacts").update({ is_primary: false }).eq("client_id", client.id);
+    const { error } = contactModal === "new"
+      ? await supabase.from("client_contacts").insert(row)
+      : await supabase.from("client_contacts").update(row).eq("id", contactModal.id);
+    if (error) { window.alert(`Couldn't save contact: ${error.message}`); return; }
+    await refetchContacts();
+    setContactModal(null);
+  }
+  async function deleteContact(x) {
+    if (!window.confirm(`Remove ${x.name}?`)) return;
+    await supabase.from("client_contacts").delete().eq("id", x.id);
+    refetchContacts();
+  }
+  async function quickStatus(t, status) {
+    await supabase.from("tasks").update({ status, done_at: status === "done" ? toKey(TODAY) : null }).eq("id", t.id);
+    refetchTasks();
+  }
+
+  const progress = onboardingProgress(client, tasks);
+  async function setLifecycle(lifecycle) {
+    const patch = { lifecycle, go_live_date: lifecycle === "live" ? (client.goLiveDate || toKey(TODAY)) : client.goLiveDate };
+    const { error } = await supabase.from("clients").update(patch).eq("id", client.id);
+    if (error) { window.alert(`Couldn't update: ${error.message}`); return; }
+    refetchClients();
+  }
+  async function beginOnboarding() {
+    const includeFormation = window.confirm("Is this a newly formed company?\n\nOK = also create the company formation tasks (ΥΜΣ, μισθωτήριο έδρας, τράπεζα, ΕΦΚΑ, κεφάλαιο, ΓΕΜΗ…).\nCancel = existing company, setup tasks only.");
+    if (await startOnboarding(client, templates, tasks, user, { includeFormation })) { await refetchTasks(); await refetchClients(); setTab("tasks"); }
+  }
+  async function markGoLive() {
+    if (!progress.complete && !window.confirm(`${progress.total - progress.done} onboarding task(s) are still open. Mark the client as live anyway?`)) return;
+    await setLifecycle("live");
+  }
+
+  const tabs = [
+    { key: "details", label: "Details" },
+    { key: "fees", label: "Fees & hours" },
+    { key: "agreement", label: `Agreement · ${CONTRACT_STATUS_LABELS[client.contractStatus]}` },
+    { key: "dd", label: `Due diligence${aml ? ` · ${AML_STATUS_LABELS[aml.status]}` : ""}` },
+    { key: "documents", label: `Documents (${documents.length})` },
+    { key: "contacts", label: `Contacts (${myContacts.length})` },
+    { key: "notes", label: `Notes (${myNotes.length})` },
+    { key: "tasks", label: `Tasks (${openTasks.length} open)` },
+  ];
+  const primary = myContacts.find((x) => x.isPrimary);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 10 }}><Btn variant="ghost" size="sm" icon={ArrowLeft} onClick={onBack}>Back to clients</Btn></div>
+      <PageHeader title={<span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>{client.name}<Badge tone={LIFECYCLE_TONE[client.lifecycle]}>{LIFECYCLE_LABELS[client.lifecycle]}</Badge></span>}
+        sub={[client.legalForm, client.afm ? `ΑΦΜ ${client.afm}` : null, client.doy ? `ΔΟΥ ${client.doy}` : null, client.representativeName ? `Rep.: ${client.representativeName}` : null, client.accountManagerId ? `Account manager: ${empName(client.accountManagerId)}` : null, client.goLiveDate ? `Go-live ${client.goLiveDate}` : null].filter(Boolean).join(" · ") || "No profile details yet — fill in the Details tab."}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="secondary" icon={Euro} onClick={() => setTab("fees")}>Add extra fee</Btn>
+            {client.lifecycle === "lead" && <Btn variant="secondary" icon={ListChecks} onClick={beginOnboarding}>Start onboarding</Btn>}
+            {client.lifecycle === "onboarding" && <Btn variant="secondary" icon={Check} onClick={markGoLive}>Mark go-live</Btn>}
+            <Btn variant="secondary" icon={MessageSquare} onClick={() => setNoteModal("new")}>Add note</Btn>
+            <Btn icon={Plus} onClick={() => setTaskModal("new")}>New task</Btn>
+          </div>
+        } />
+
+      {client.lifecycle === "onboarding" && (
+        <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${C.warn}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Onboarding in progress — {progress.done} of {progress.total} setup tasks done</div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginTop: 2 }}>
+                {progress.total === 0 ? "No checklist tasks exist for this client yet." : progress.complete ? "All done — the client goes live automatically." : "The client goes live automatically when the last checklist task is marked done."}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {progress.total === 0 && <Btn size="sm" variant="secondary" onClick={beginOnboarding}>Create checklist tasks</Btn>}
+              <Btn size="sm" variant="ghost" onClick={() => setTab("tasks")}>Open tasks</Btn>
+            </div>
+          </div>
+          {progress.total > 0 && (
+            <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+              {ONBOARDING_STAGES.map((stg) => {
+                const list = progress.list.filter((t) => (t.stage || "setup") === stg.key);
+                if (list.length === 0) return null;
+                const done = list.filter((t) => t.status === "done").length;
+                return (
+                  <div key={stg.key} style={{ flex: 1, minWidth: 180 }}>
+                    <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 4 }}>{stg.label} <span style={{ fontFamily: mono }}>{done}/{list.length}</span></div>
+                    <div style={{ height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(done / list.length) * 100}%`, height: "100%", background: done === list.length ? C.accent : C.warn }} /></div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      )}
+      {client.lifecycle === "lead" && (
+        <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${C.inkFaint}` }}>
+          <div style={{ fontFamily: sans, fontSize: 13, color: C.ink }}>Prospect — not yet set up. Press <strong>Start onboarding</strong> when the engagement is agreed: the setup checklist ({templates.filter((t) => t.active).length} tasks) is created for this client and assigned to the account manager.</div>
+        </Panel>
+      )}
+
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatCard label="Status" value={client.endDate && client.endDate <= toKey(TODAY) ? "Ended" : client.active ? "Active" : "Inactive"} sub={client.endDate ? `End date ${client.endDate}` : `Fixed fee ${client.fixedFee ? fmtEur(client.fixedFee) + "/mo" : "—"}`} />
+        <StatCard label={`Hours ${TODAY.getFullYear()} YTD`} value={ytdHours.toFixed(1) + "h"} sub="Logged by the team" />
+        <StatCard label={`Revenue ${TODAY.getFullYear()} YTD`} value={fmtEur(ytdRevenue)} accent={C.accent} sub="Fixed + extra fees" />
+        <StatCard label="Open tasks" value={String(openTasks.length)} accent={openTasks.some(taskIsOverdue) ? C.danger : undefined} sub={openTasks.filter(taskIsOverdue).length ? `${openTasks.filter(taskIsOverdue).length} overdue` : "None overdue"} />
+        {primary && <StatCard label="Primary contact" value={primary.name} sub={[primary.phone, primary.email].filter(Boolean).join(" · ") || primary.role || ""} />}
+      </div>
+
+      <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${C.border}`, marginBottom: 16 }}>
+        {tabs.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{ background: "none", border: "none", cursor: "pointer", padding: "8px 14px", fontFamily: sans, fontSize: 13, fontWeight: tab === t.key ? 700 : 500, color: tab === t.key ? C.accentDark : C.inkMuted, borderBottom: tab === t.key ? `2px solid ${C.accent}` : "2px solid transparent", marginBottom: -1 }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "details" && (
+        <Panel>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxWidth: 760 }}>
+            <Field label="Client name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <Field label="Legal form">
+              <select style={inputStyle} value={form.legalForm} onChange={(e) => setForm({ ...form, legalForm: e.target.value })}>
+                <option value="">—</option>
+                {LEGAL_FORMS.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </Field>
+            <Field label="ΑΦΜ"><input style={inputStyle} value={form.afm} onChange={(e) => setForm({ ...form, afm: e.target.value })} placeholder="9 digits" /></Field>
+            <Field label="ΔΟΥ"><input style={inputStyle} value={form.doy} onChange={(e) => setForm({ ...form, doy: e.target.value })} placeholder="e.g. Α' Αθηνών" /></Field>
+            <div style={{ gridColumn: "1 / span 2" }}><Field label="Address"><input style={inputStyle} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Field></div>
+            <Field label="Email"><input style={inputStyle} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
+            <Field label="Phone"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+            <Field label="Account manager (at the firm)">
+              <select style={inputStyle} value={form.accountManagerId} onChange={(e) => setForm({ ...form, accountManagerId: e.target.value })}>
+                <option value="">—</option>
+                {employees.filter((e) => e.active || e.id === form.accountManagerId).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </Field>
+            <div style={{ gridColumn: "1 / span 2", fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, marginTop: 6, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>Legal representative <span style={{ fontWeight: 400, color: C.inkMuted }}>— used in the agreement and the due-diligence file</span></div>
+            <Field label="Full name & father's name"><input style={inputStyle} value={form.representativeName} onChange={(e) => setForm({ ...form, representativeName: e.target.value })} /></Field>
+            <Field label="ΑΦΜ"><input style={inputStyle} value={form.representativeAfm} onChange={(e) => setForm({ ...form, representativeAfm: e.target.value })} /></Field>
+            <Field label="ID document">
+              <select style={inputStyle} value={form.representativeIdType} onChange={(e) => setForm({ ...form, representativeIdType: e.target.value })}>
+                <option value="">—</option><option>Δελτίο ταυτότητας</option><option>Διαβατήριο</option><option>Άδεια διαμονής</option><option>Ταυτότητα ομογενούς</option><option>Υπηρεσιακή ταυτότητα</option>
+              </select>
+            </Field>
+            <Field label="ID number (ΑΔΤ) · issuing authority"><input style={inputStyle} value={form.representativeIdNumber} onChange={(e) => setForm({ ...form, representativeIdNumber: e.target.value })} placeholder="e.g. ΑΚ 123456" /></Field>
+            <Field label="Email"><input style={inputStyle} value={form.representativeEmail} onChange={(e) => setForm({ ...form, representativeEmail: e.target.value })} /></Field>
+            <Field label="Phone"><input style={inputStyle} value={form.representativePhone} onChange={(e) => setForm({ ...form, representativePhone: e.target.value })} /></Field>
+            <Field label="Stage">
+              <select style={inputStyle} value={client.lifecycle} onChange={(e) => setLifecycle(e.target.value)}>
+                {Object.entries(LIFECYCLE_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </Field>
+            <Field label="Go-live date">
+              <input type="date" style={inputStyle} value={client.goLiveDate || ""} onChange={async (e) => { await supabase.from("clients").update({ go_live_date: e.target.value || null }).eq("id", client.id); refetchClients(); }} />
+            </Field>
+            <div style={{ gridColumn: "1 / span 2" }}><Field label="General notes (standing information about the client)"><textarea style={textareaStyle} value={form.generalNotes} onChange={(e) => setForm({ ...form, generalNotes: e.target.value })} /></Field></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
+            <Btn onClick={saveDetails} disabled={!dirty}>Save details</Btn>
+            {dirty && <span style={{ fontFamily: sans, fontSize: 12, color: C.warn }}>Unsaved changes</span>}
+            <span style={{ fontFamily: sans, fontSize: 12, color: C.inkFaint, marginLeft: "auto" }}>Fees, extra fees and hours are in the "Fees & hours" tab.</span>
+          </div>
+        </Panel>
+      )}
+
+      {tab === "contacts" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn size="sm" icon={Plus} onClick={() => openContact(null)}>Add contact</Btn></div>
+          {myContacts.length === 0 ? <EmptyState icon={UserRound} title="No contact persons yet" /> : (
+            <TableShell headers={["Name", "Role", "Phone", "Email", "Note", ""]}>
+              {myContacts.map((x) => (
+                <tr key={x.id}>
+                  <Td><span style={{ fontWeight: 600 }}>{x.name}</span>{x.isPrimary && <Badge tone="accent">Primary</Badge>}</Td>
+                  <Td style={{ color: C.inkMuted }}>{x.role || "—"}</Td>
+                  <Td mono>{x.phone ? <a href={`tel:${x.phone}`} style={{ color: C.ink, textDecoration: "none" }}><Phone size={11} style={{ marginRight: 4 }} />{x.phone}</a> : "—"}</Td>
+                  <Td>{x.email ? <a href={`mailto:${x.email}`} style={{ color: C.accentDark }}><Mail size={11} style={{ marginRight: 4 }} />{x.email}</a> : "—"}</Td>
+                  <Td style={{ color: C.inkMuted }}>{x.note || "—"}</Td>
+                  <Td right>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <Btn size="sm" variant="ghost" icon={Pencil} onClick={() => openContact(x)}>Edit</Btn>
+                      <Btn size="sm" variant="ghost" icon={Trash2} onClick={() => deleteContact(x)}>Remove</Btn>
+                    </div>
+                  </Td>
+                </tr>
+              ))}
+            </TableShell>
+          )}
+        </Panel>
+      )}
+
+      {tab === "notes" && (
+        <Panel>
+          {myNotes.length === 0 ? <EmptyState icon={MessageSquare} title="No notes yet" sub="Log calls, emails and meetings so the whole team has the history." /> : (
+            <div>
+              {myNotes.map((n) => (
+                <div key={n.id} style={{ display: "flex", gap: 12, padding: "10px 0", borderBottom: `1px solid ${C.border}`, fontFamily: sans }}>
+                  <div style={{ minWidth: 92, fontFamily: mono, fontSize: 12, color: C.inkMuted }}>{n.noteDate}</div>
+                  <div style={{ minWidth: 72 }}><Badge tone="neutral">{NOTE_KINDS[n.kind]}</Badge></div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: C.ink, whiteSpace: "pre-wrap" }}>{n.content}</div>
+                    <div style={{ fontSize: 11, color: C.inkFaint, marginTop: 3 }}>{empName(n.authorId)}</div>
+                  </div>
+                  {(n.authorId === user.id || user.role === "admin") && <button onClick={() => setNoteModal(n)} style={iconBtnStyle} title="Edit"><Pencil size={13} color={C.inkMuted} /></button>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {tab === "fees" && <ClientFeesTab client={client} entries={entries} employees={employees} refetchClients={refetchClients} />}
+      {tab === "agreement" && <ClientAgreementTab user={user} client={client} aml={aml} firm={firm} saveFirm={saveFirm} employees={employees} contacts={myContacts} ubos={ubos} documents={documents} refetchClients={refetchClients} refetchDocuments={refetchDocuments} />}
+      {tab === "documents" && <ClientDocumentsTab user={user} client={client} documents={documents} employees={employees} refetchDocuments={refetchDocuments} />}
+      {tab === "dd" && (
+        <DueDiligenceTab user={user} client={client} employees={employees} aml={aml} ubos={ubos} tasks={tasks} documents={documents} refetchDocuments={refetchDocuments} refetchDueDiligence={refetchDueDiligence} refetchTasks={refetchTasks} />
+      )}
+
+      {tab === "tasks" && (
+        <div>
+          {progress.total > 0 && ONBOARDING_STAGES.map((stg) => {
+            const list = progress.list.filter((t) => (t.stage || "setup") === stg.key);
+            if (list.length === 0) return null;
+            const done = list.filter((t) => t.status === "done").length;
+            return (
+              <Panel key={stg.key} style={{ marginBottom: 18, borderLeft: `4px solid ${done === list.length ? C.accent : C.warn}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>{stg.label} <span style={{ fontFamily: mono, fontSize: 12, color: C.inkMuted }}>{done}/{list.length}</span></div>
+                  {stg.key === "aml" && <Btn size="sm" variant="ghost" onClick={() => setTab("dd")}>Open due diligence record</Btn>}
+                </div>
+                <TaskList user={user} tasks={list} clients={[]} employees={employees} showClient={false} onEdit={(t) => setTaskModal(t)} onQuickStatus={quickStatus} />
+              </Panel>
+            );
+          })}
+          <Panel>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 10 }}>Other tasks</div>
+            <TaskList user={user} tasks={myTasks.filter((t) => t.kind !== "onboarding")} clients={[]} employees={employees} showClient={false} onEdit={(t) => setTaskModal(t)} onQuickStatus={quickStatus} />
+          </Panel>
+        </div>
+      )}
+
+      {contactModal && (
+        <Modal title={contactModal === "new" ? "Add contact" : "Edit contact"} onClose={() => setContactModal(null)} width={440}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Name"><input style={inputStyle} value={cName} onChange={(e) => setCName(e.target.value)} autoFocus /></Field>
+            <Field label="Role / position"><input style={inputStyle} value={cRole} onChange={(e) => setCRole(e.target.value)} placeholder="e.g. Διαχειριστής, Λογιστήριο" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Phone"><input style={inputStyle} value={cPhone} onChange={(e) => setCPhone(e.target.value)} /></Field>
+              <Field label="Email"><input style={inputStyle} value={cEmail} onChange={(e) => setCEmail(e.target.value)} /></Field>
+            </div>
+            <Field label="Note (optional)"><input style={inputStyle} value={cNote} onChange={(e) => setCNote(e.target.value)} /></Field>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, color: C.ink }}>
+              <input type="checkbox" checked={cPrimary} onChange={(e) => setCPrimary(e.target.checked)} /> Primary contact
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+              <Btn variant="secondary" onClick={() => setContactModal(null)}>Cancel</Btn>
+              <Btn onClick={saveContact}>Save</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {noteModal && <NoteModal user={user} note={noteModal === "new" ? null : noteModal} fixedClientId={client.id} clients={[]} onClose={() => setNoteModal(null)} onSaved={refetchNotes} />}
+      {taskModal && <TaskModal user={user} task={taskModal === "new" ? null : taskModal} fixedClientId={client.id} clients={[]} employees={employees} onClose={() => setTaskModal(null)} onSaved={refetchTasks} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Root                                                                     */
 /* ---------------------------------------------------------------------- */
 
@@ -4576,6 +6434,18 @@ export default function App() {
   const [rentalExpenses, refetchRentalExpensesRaw, rentalExpLoading] = useTable("rental_expenses", mapRentalExpense);
   const refetchRental = useCallback(async () => { await Promise.all([refetchRentalPropertiesRaw(), refetchRentalExpensesRaw()]); }, [refetchRentalPropertiesRaw, refetchRentalExpensesRaw]);
   const [billingStatuses, refetchBilling, billingLoading] = useTable("billing_status", mapBillingStatus);
+  const [contacts, refetchContacts, contactsLoading] = useTable("client_contacts", mapContact, "name");
+  const [notes, refetchNotes, notesLoading] = useTable("client_notes", mapNote);
+  const [tasks, refetchTasks, tasksLoading] = useTable("tasks", mapTask);
+  const [templates, refetchTemplates, templatesLoading] = useTable("onboarding_templates", mapTemplate, "sort_order");
+  const [amlRecords, refetchAml, amlLoading] = useTable("client_aml", mapAml);
+  const [ubos, refetchUbos, ubosLoading] = useTable("client_beneficial_owners", mapUbo, "name");
+  const [documents, refetchDocuments, documentsLoading] = useTable("client_documents", mapDocument);
+  const [firm, saveFirm] = useAppSetting("firm", DEFAULT_FIRM);
+  const refetchDueDiligence = useCallback(async () => { await Promise.all([refetchAml(), refetchUbos()]); }, [refetchAml, refetchUbos]);
+  const [cardClientId, setCardClientId] = useState(null);
+  const [cardTab, setCardTab] = useState("details");
+  const openClientCard = (id, tab = "details") => { setCardClientId(id); setCardTab(tab); setView("clientcard"); };
 
   const refetchEmployees = useCallback(async () => { await Promise.all([refetchProfilesRaw(), refetchCostHistoryRaw()]); }, [refetchProfilesRaw, refetchCostHistoryRaw]);
   const refetchClients = useCallback(async () => { await Promise.all([refetchClientsRaw(), refetchFeeHistoryRaw(), refetchExtraFeesRaw()]); }, [refetchClientsRaw, refetchFeeHistoryRaw, refetchExtraFeesRaw]);
@@ -4603,6 +6473,20 @@ export default function App() {
 
   const user = session ? employees.find((p) => p.id === session.user.id) : null;
 
+  // Automatic go-live: when every onboarding task of an onboarding client is
+  // done, the client becomes "live" (dated today). Runs for managers only,
+  // since only they may update clients.
+  useEffect(() => {
+    if (!user || user.role !== "admin") return;
+    const ready = clients.filter((c) => c.lifecycle === "onboarding" && onboardingProgress(c, tasks).complete);
+    if (ready.length === 0) return;
+    (async () => {
+      for (const c of ready) await supabase.from("clients").update({ lifecycle: "live", go_live_date: toKey(TODAY) }).eq("id", c.id);
+      refetchClients();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, clients, user?.id]);
+
   useEffect(() => {
     if (user && view === null) setView(user.role === "admin" ? "dashboard" : "timesheet");
   }, [user, view]);
@@ -4621,7 +6505,7 @@ export default function App() {
   if (!session) return <AuthScreen />;
   if (profilesLoading || !user) return <LoadingScreen text="Setting up your account…" />;
   if (!user.active) return <LoadingScreen text="This account has been deactivated. Contact your manager." />;
-  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || billingLoading || view === null) return <LoadingScreen />;
+  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || billingLoading || contactsLoading || notesLoading || tasksLoading || templatesLoading || amlLoading || ubosLoading || documentsLoading || view === null) return <LoadingScreen />;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: C.bg, fontFamily: sans }}>
@@ -4641,13 +6525,25 @@ export default function App() {
           <TeamCalendar employees={employees} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "dashboard" && (
-          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} />
+          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates} />
         )}
         {user.role === "admin" && view === "timesheets" && (
           <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} />
         )}
         {user.role === "admin" && view === "clients" && (
-          <AdminClients clients={clients} refetchClients={refetchClients} entries={entries} />
+          <AdminClients user={user} clients={clients} refetchClients={refetchClients} entries={entries} onOpenCard={openClientCard} tasks={tasks} templates={templates} refetchTasks={refetchTasks} amlRecords={amlRecords} employees={employees} />
+        )}
+        {user.role === "admin" && view === "clientcard" && (
+          <ClientCard user={user} client={clients.find((c) => c.id === cardClientId)} employees={employees} contacts={contacts} notes={notes} tasks={tasks} entries={entries} templates={templates}
+            aml={amlRecords.find((a) => a.clientId === cardClientId) || null} ubos={ubos.filter((u) => u.clientId === cardClientId)} refetchDueDiligence={refetchDueDiligence}
+            documents={documents.filter((d) => d.clientId === cardClientId)} refetchDocuments={refetchDocuments} firm={firm} saveFirm={saveFirm} initialTab={cardTab}
+            refetchClients={refetchClients} refetchContacts={refetchContacts} refetchNotes={refetchNotes} refetchTasks={refetchTasks} onBack={() => setView("clients")} />
+        )}
+        {user.role === "admin" && view === "tasks" && (
+          <TasksPage user={user} mode="all" tasks={tasks} clients={clients} employees={employees} notes={notes} refetchTasks={refetchTasks} refetchNotes={refetchNotes} onOpenCard={openClientCard} templates={templates} refetchTemplates={refetchTemplates} />
+        )}
+        {view === "mytasks" && (
+          <TasksPage user={user} mode="mine" tasks={tasks} clients={clients} employees={employees} notes={notes} refetchTasks={refetchTasks} refetchNotes={refetchNotes} />
         )}
         {user.role === "admin" && view === "employees" && (
           <AdminEmployees employees={employees} refetchEmployees={refetchEmployees} entries={entries} />
