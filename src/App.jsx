@@ -956,8 +956,8 @@ function TableShell({ headers, children }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 13 }}>
         <thead>
           <tr>
-            {headers.map((h) => (
-              <th key={h} style={{
+            {headers.map((h, hi) => (
+              <th key={hi} style={{
                 textAlign: "left", padding: "6px 8px", fontSize: 11.5, fontWeight: 600,
                 color: C.inkFaint, borderBottom: `1px solid ${C.border}`,
               }}>{h}</th>
@@ -1000,6 +1000,7 @@ function Sidebar({ user, view, setView }) {
     { key: "rental", label: "Rental", icon: Home },
     { key: "reports", label: "Reports", icon: SlidersHorizontal },
     { key: "billing", label: "Billing", icon: Receipt },
+    { key: "compliance", label: "AML Compliance", icon: AlertTriangle },
   ];
   const items = user.role === "admin" ? adminNav : employeeNav;
   return (
@@ -1204,6 +1205,8 @@ const mapAml = (r) => ({
   ddLevel: r.dd_level || "standard", documents: r.documents && typeof r.documents === "object" ? r.documents : {}, status: r.status || "not_started",
   completedOn: r.completed_on || "", completedBy: r.completed_by || null, approvedBy: r.approved_by || null, approvedOn: r.approved_on || "", nextReviewOn: r.next_review_on || "", notes: r.notes || "",
   entityType: r.entity_type || "", infoSources: r.info_sources || "", proxyName: r.proxy_name || "", proxyIdNumber: r.proxy_id_number || "", decision: r.decision || "", decisionReason: r.decision_reason || "", uboActionsRecord: r.ubo_actions_record || "",
+  riskFactorNotes: r.risk_factor_notes && typeof r.risk_factor_notes === "object" ? r.risk_factor_notes : {}, assessmentType: r.assessment_type || "initial", assessmentDate: r.assessment_date || "", sheetVersion: Number(r.sheet_version) || 1, riskScoreB: Number(r.risk_score_b) || 0,
+  uboChangeDate: r.ubo_change_date || "", uboFiledDate: r.ubo_filed_date || "",
 });
 const mapUbo = (r) => ({ id: r.id, clientId: r.client_id, name: r.name, afm: r.afm || "", idNumber: r.id_number || "", nationality: r.nationality || "", residenceCountry: r.residence_country || "", ownershipPct: r.ownership_pct === null || r.ownership_pct === undefined ? null : Number(r.ownership_pct), controlType: r.control_type || "", isPep: !!r.is_pep, verifiedOn: r.verified_on || "", verificationDoc: r.verification_doc || "", note: r.note || "" });
 
@@ -1310,6 +1313,163 @@ const AML_DOCUMENTS = [
   { key: "engagement", label: "Signed engagement letter describing the services", types: ["natural", "capital", "partnership", "other"] },
 ];
 const AML_SERVICES = ["Bookkeeping", "Tax filings", "Payroll", "Advisory", "Representation before authorities", "Company formation / corporate changes", "Registered office"];
+// ---- Model B (0–100): same factors, per-axis points, highest + 5 per extra
+// factor, capped at 25 per axis. Annex I factors keep the axis at 0.
+const AML_MODEL_B_POINTS = {
+  a_listed: 0, a_public: 0, a_unusual: 15, a_asset_vehicle: 15, a_cash: 15, a_nominee: 20, a_complex: 20, a_golden_visa: 20, a_ubo_unknown: 25,
+  b_eu: 0, b_fatf_ok: 5, b_third: 10, b_corruption: 15, b_weak_aml: 20,
+  c_simple: 0, c_formation: 10, c_private_banking: 10, c_crypto: 15, c_sensitive_goods: 15, c_anonymity: 20,
+  d_remote_eid: 0, d_proxy: 5, d_remote: 15, d_third_party_pay: 20, d_complex_tx: 20,
+};
+const AML_MODEL_B_BASE = { A: 5, C: 5 }; // "βάση" rows when nothing else is ticked on the axis
+function amlAssessB(factorKeys) {
+  const chosen = AML_RISK_FACTORS.filter((f) => factorKeys.includes(f.key) && !f.override);
+  const forced = AML_RISK_FACTORS.some((f) => f.override && factorKeys.includes(f.key));
+  const hasAnnexI = chosen.some((f) => (f.points || 0) < 0);
+  const hasAnnexII = chosen.some((f) => (f.points || 0) > 0 && !["c_formation", "b_third", "d_proxy"].includes(f.key));
+  const axes = {};
+  AML_AXES.forEach((ax) => {
+    const pts = chosen.filter((f) => f.axis === ax.key).map((f) => AML_MODEL_B_POINTS[f.key] ?? 0).sort((x, y) => y - x);
+    let v = pts.length ? pts[0] + 5 * (pts.length - 1) : (AML_MODEL_B_BASE[ax.key] || 0);
+    if (pts.length && pts[0] === 0 && chosen.some((f) => f.axis === ax.key && (f.points || 0) < 0)) v = 0;
+    axes[ax.key] = Math.min(25, v);
+  });
+  const score = Object.values(axes).reduce((s, v) => s + v, 0);
+  let level;
+  if (forced || score >= 46) level = "high";
+  else if (score >= 16 || !hasAnnexI || hasAnnexII) level = "medium";
+  else level = "low";
+  return { score, axes, level, forced, hasAnnexI, hasAnnexII };
+}
+const AML_ASSESSMENT_TYPES = { initial: "Αρχική", annual: "Ετήσια", extraordinary: "Έκτακτη" };
+
+// ---- The 23 ΑΑΔΕ audit questions (self-assessment), with the guide's pointer.
+const AML_AUDIT_QUESTIONS = [
+  { n: 1, group: "Εσωτερικές διαδικασίες / πολιτικές", q: "Υπάρχει συστηματική ενημέρωση/εκπαίδευση του προσωπικού για θέματα ξεπλύματος; (αρ. 37)", fix: "Βήμα 12 — εκπαίδευση και αρχείο εκπαίδευσης" },
+  { n: 2, group: "Εσωτερικές διαδικασίες / πολιτικές", q: "Υπάρχει γραπτή επικαιροποιημένη πολιτική (εγχειρίδιο πολιτικών και διαδικασιών); (αρ. 35)", fix: "Βήμα 10 — εγχειρίδιο με ημερομηνία έγκρισης" },
+  { n: 3, group: "Εσωτερικές διαδικασίες / πολιτικές", q: "Έχει οριστεί υπεύθυνος συμμόρφωσης; (αρ. 35)", fix: "Βήμα 1 — γραπτή πράξη ορισμού" },
+  { n: 4, group: "Εσωτερικές διαδικασίες / πολιτικές", q: "Υπάρχουν διαδικασίες εσωτερικής καταγγελίας παραβάσεων μέσω ειδικού, ανεξάρτητου και ανώνυμου διαύλου; (αρ. 35 παρ. 3β)", fix: "Βήμα 11 — δίαυλος ή γραπτή τεκμηρίωση απουσίας προσωπικού" },
+  { n: 5, group: "Εσωτερικές διαδικασίες / πολιτικές", q: "Αν ανήκετε σε όμιλο, εφαρμόζονται πολιτικές σε επίπεδο ομίλου; (αρ. 36)", fix: "Αν δεν ανήκετε, απαντάτε «δεν συντρέχει» — όχι κενό", na: true },
+  { n: 6, group: "Μέτρα δέουσας επιμέλειας", q: "Υπάρχει διαδικασία επαλήθευσης εγγράφων ταυτοποίησης (Γ.Ε.ΜΗ., ΦΕΚ σύστασης, ΠΟΛ.1200/2018); (αρ. 13 παρ. 1α)", fix: "Βήμα 4 — έντυπο KYC με τους Πίνακες Α–Δ" },
+  { n: 7, group: "Μέτρα δέουσας επιμέλειας", q: "Υπάρχει διαδικασία εξακρίβωσης πραγματικών δικαιούχων; (αρ. 13 παρ. 1β)", fix: "Βήμα 5 — έντυπο ΠΔ και χαρτογράφηση δομής" },
+  { n: 8, group: "Μέτρα δέουσας επιμέλειας", q: "Τηρείτε αρχείο με τα στοιχεία ταυτοποίησης των πελατών; (αρ. 30, 31)", fix: "Ατομικοί φάκελοι πελατών, έντυποι ή ψηφιακοί" },
+  { n: 9, group: "Μέτρα δέουσας επιμέλειας", q: "Έχει πραγματοποιηθεί συναλλαγή με πελάτη πριν την ολοκλήρωση της ταυτοποίησης; (αρ. 14 παρ. 1 και 2)", fix: "Τεκμηριώστε ημερομηνίες ταυτοποίησης πριν από την έναρξη κάθε σχέσης", invert: true },
+  { n: 10, group: "Μέτρα δέουσας επιμέλειας", q: "Υπάρχει διαδικασία για ΠΕΠ / στενούς συγγενείς / στενούς συνεργάτες και εφαρμόζονται μέτρα αυξημένης επιμέλειας; (αρ. 3 παρ. 9-10, αρ. 16, 18)", fix: "Ενότητα Β.7.3 — ερώτημα ΠΕΠ στο KYC και τα 4 μέτρα του άρθρου 18" },
+  { n: 11, group: "Μέτρα δέουσας επιμέλειας", q: "Έχει απορριφθεί συνεργασία λόγω υποψίας σύνδεσης με ΞΧ/ΧΤ; (αρ. 23)", fix: "Τηρήστε αρχείο απορρίψεων και διακοπών με αιτιολογία", na: true },
+  { n: 12, group: "Μέτρα δέουσας επιμέλειας", q: "Υπάρχει πολιτική επικαιροποίησης της δέουσας επιμέλειας για τους υφιστάμενους πελάτες; (αρ. 13 παρ. 7)", fix: "Βήμα 14 — πρόγραμμα επανεξέτασης με ημερομηνίες" },
+  { n: 13, group: "Μέτρα δέουσας επιμέλειας", q: "Υπάρχει διαδικασία εντοπισμού ασυνήθιστων συναλλαγών; (αρ. 16)", fix: "Ενότητα Β.7.4 — γραπτή ακολουθία εντοπισμού και κλιμάκωσης" },
+  { n: 14, group: "Μέτρα δέουσας επιμέλειας", q: "Τηρείτε αρχείο εγγράφων για πέντε έτη μετά τη λήξη της σχέσης; (αρ. 30 παρ. 3)", fix: "Πολιτική τήρησης 5ετίας και διαγραφής δεδομένων μετά τη λήξη" },
+  { n: 15, group: "Ανάλυση κινδύνου", q: "Γίνεται εκτίμηση κινδύνου κάθε πελάτη, με μέθοδο, τεκμηρίωση και λίστα όλων των αξιολογημένων πελατών; (αρ. 13 παρ. 9, αρ. 35 παρ. 1-2)", fix: "Βήματα 7-9 — μεθοδολογία, φύλλο ανά πελάτη και συγκεντρωτική κατάσταση" },
+  { n: 16, group: "Ανάλυση κινδύνου", q: "Η εκτίμηση κινδύνου καλύπτει τύπο πελάτη, γεωγραφία, τρόπους πληρωμής, προϊόντα και υπηρεσίες; (αρ. 15, 16)", fix: "Βήμα 7 — οι τέσσερις άξονες της μεθοδολογίας" },
+  { n: 17, group: "Ανάλυση κινδύνου", q: "Έχουν συνεκτιμηθεί όλοι οι παράγοντες των Παραρτημάτων Ι και ΙΙ; (αρ. 15, 16)", fix: "Ενότητες Β.5.1-Β.5.2 — αντιστοίχιση με τους κωδικούς των Παραρτημάτων" },
+  { n: 18, group: "Αποστολή αναφορών", q: "Υπάρχει πολιτική υποβολής αναφορών προς την Αρχή και αρχείο αναφορών; (αρ. 22)", fix: "Πολιτική STR, αρχείο αναφορών και αρχείο περιστατικών που εξετάστηκαν χωρίς αναφορά (αρ. 30 παρ. 1γ)" },
+  { n: 19, group: "Αποστολή αναφορών", q: "Τηρείται η απαγόρευση γνωστοποίησης (tipping-off) και ενημερώνονται οι υπάλληλοι; (αρ. 27)", fix: "Ρήτρα στο εγχειρίδιο και γραπτή ενημέρωση προσωπικού" },
+  { n: 20, group: "Λοιπές", q: "Έχετε καταχωρίσει στο Μητρώο Πραγματικών Δικαιούχων τα στοιχεία της δικής σας εταιρείας; (αρ. 20)", fix: "Βήμα 2 — ΚΜΠΔ και ειδικό μητρώο στην έδρα" },
+  { n: 21, group: "Λοιπές", q: "Έχετε συμπληρώσει τον Πίνακα Ι΄ του εντύπου Ε3 σε κάθε φορολογικό έτος;", fix: "Βήμα 2 — ελέγξτε τις υποβληθείσες δηλώσεις σας" },
+  { n: 22, group: "Λοιπές", q: "Με τι συχνότητα επικαιροποιείτε τις πληροφορίες της επιχειρηματικής σχέσης; (αρ. 13 παρ. 1δ)", fix: "Γραπτός πίνακας συχνοτήτων ανά κατηγορία κινδύνου" },
+  { n: 23, group: "Λοιπές", q: "Συλλέγονται πληροφορίες για αντικείμενο και σκοπό της σχέσης, και από ποιες πηγές; (αρ. 13 παρ. 1γ)", fix: "Βήμα 6 — σημείωμα σκοπού και φύσης ανά πελάτη με αναφορά πηγών" },
+];
+// ---- The 15-step harmonisation roadmap (five stages).
+const AML_STEPS = [
+  { n: 1, stage: "Προετοιμασία", title: "Ορίστε Υπεύθυνο Συμμόρφωσης", out: "Γραπτή πράξη ορισμού, με ημερομηνία και στοιχεία επικοινωνίας", q: [3] },
+  { n: 2, stage: "Προετοιμασία", title: "Τακτοποιήστε τις δικές σας υποχρεώσεις", out: "Καταχώριση του γραφείου στο ΚΜΠΔ, Πίνακας Ι΄ του Ε3", q: [20, 21] },
+  { n: 3, stage: "Συγκέντρωση στοιχείων", title: "Απογραφή του πελατολογίου", out: "Ενιαίος κατάλογος πελατών με νομική μορφή, υπηρεσίες και προφανείς ενδείξεις", q: [] },
+  { n: 4, stage: "Συγκέντρωση στοιχείων", title: "Συλλέξτε τα έγγραφα ταυτοποίησης", out: "Πίνακες Α–Δ της ΠΟΛ.1200/2018, έντυπο KYC", q: [6, 8] },
+  { n: 5, stage: "Συγκέντρωση στοιχείων", title: "Εξακριβώστε τον πραγματικό δικαιούχο", out: "Χαρτογράφηση δομής ιδιοκτησίας, αποδεικτικό ΚΜΠΔ του πελάτη", q: [7] },
+  { n: 6, stage: "Συγκέντρωση στοιχείων", title: "Καταγράψτε σκοπό και φύση της σχέσης", out: "Σημείωμα ανά πελάτη, με αναφορά των πηγών", q: [23] },
+  { n: 7, stage: "Αξιολόγηση κινδύνου", title: "Φτιάξτε τη μεθοδολογία βαθμολόγησης", out: "Γραπτή μέθοδος, στηριγμένη στα Παραρτήματα Ι και ΙΙ", q: [15, 17] },
+  { n: 8, stage: "Αξιολόγηση κινδύνου", title: "Βαθμολογήστε κάθε πελάτη και κατατάξτε τον", out: "Φύλλο ανά πελάτη → είδος δέουσας επιμέλειας", q: [15] },
+  { n: 9, stage: "Αξιολόγηση κινδύνου", title: "Τεκμηριώστε και συντάξτε την κατάσταση πελατών", out: "Μία γραμμή ανά πελάτη, με κατηγορία και ημερομηνία, έκδοση 1.0", q: [15, 16, 17] },
+  { n: 10, stage: "Θεσμοθέτηση", title: "Εγχειρίδιο Πολιτικών και Διαδικασιών", out: "Εγκεκριμένο κείμενο, με ημερομηνία έγκρισης και επόμενης επανεξέτασης", q: [2] },
+  { n: 11, stage: "Θεσμοθέτηση", title: "Δίαυλος καταγγελιών, καταλληλότητα, εσωτερικός έλεγχος", out: "Οι τρεις απαιτήσεις της παρ. 3 του άρθρου 35", q: [4] },
+  { n: 12, stage: "Θεσμοθέτηση", title: "Εκπαίδευση και αρχείο εκπαίδευσης", out: "Πρόγραμμα με βάση τους κινδύνους, αποδεικτικά", q: [1] },
+  { n: 13, stage: "Λειτουργία", title: "Εφαρμόστε τα μέτρα ανά κατηγορία κινδύνου", out: "Απλουστευμένη, συνήθης ή αυξημένη δέουσα επιμέλεια", q: [10] },
+  { n: 14, stage: "Λειτουργία", title: "Παρακολούθηση και επικαιροποίηση", out: "Ημερομηνίες επανεξέτασης, έκτακτη επανεξέταση σε κάθε μεταβολή", q: [12, 13, 22] },
+  { n: 15, stage: "Λειτουργία", title: "Διαδικασία ύποπτων συναλλαγών", out: "Γραπτή ακολουθία, αρχείο και για όσα εξετάστηκαν χωρίς αναφορά", q: [11, 18, 19] },
+];
+// ---- The 14 documents of the firm's compliance file.
+const AML_FILE_DOCUMENTS = [
+  { n: 1, title: "Πράξη ορισμού υπευθύνου συμμόρφωσης, με ημερομηνία και αρμοδιότητες", step: 1 },
+  { n: 2, title: "Αποδεικτικό καταχώρισης του γραφείου στο ΚΜΠΔ, ειδικό μητρώο στην έδρα και Πίνακας Ι΄ του Ε3 κάθε έτους", step: 2 },
+  { n: 3, title: "Φύλλο απογραφής πελατολογίου, με ημερομηνία επόμενης επανεξέτασης ανά πελάτη", step: 3 },
+  { n: 4, title: "Έντυπο γνωριμίας (KYC) ανά πελάτη, με τα έγγραφα της ΠΟΛ.1200/2018 και την ενημέρωση GDPR", step: 4 },
+  { n: 5, title: "Έντυπο πραγματικού δικαιούχου, χαρτογράφηση δομής και αποδεικτικό ΚΜΠΔ", step: 5 },
+  { n: 6, title: "Σημείωμα σκοπού και φύσης της σχέσης, ή συμφωνητικό υπηρεσιών", step: 6 },
+  { n: 7, title: "Γραπτή μεθοδολογία ανάλυσης κινδύνου (Κεφάλαιο 2 του εγχειριδίου) με το προφίλ του γραφείου", step: 7 },
+  { n: 8, title: "Φύλλο ανάλυσης κινδύνου ανά πελάτη, χρονολογημένο και υπογεγραμμένο", step: 8 },
+  { n: 9, title: "Συγκεντρωτική κατάσταση κατάταξης πελατών, με αριθμό έκδοσης και ημερομηνία", step: 9 },
+  { n: 10, title: "Εγχειρίδιο Πολιτικών και Διαδικασιών, με ημερομηνία έγκρισης και επόμενης επανεξέτασης", step: 10 },
+  { n: 11, title: "Δίαυλος καταγγελιών, διαδικασία καταλληλότητας προσωπικού και πόρισμα ετήσιου εσωτερικού ελέγχου", step: 11 },
+  { n: 12, title: "Αρχείο εκπαίδευσης, με ημερομηνίες, θεματολογία και αποδεικτικά", step: 12 },
+  { n: 13, title: "Γραπτές εγκρίσεις ανώτερου στελέχους για πελάτες υψηλού κινδύνου και ΠΕΠ", step: 13 },
+  { n: 14, title: "Γραπτή διαδικασία ύποπτων συναλλαγών, αρχείο αναφορών, αρχείο περιστατικών χωρίς αναφορά, αρχείο απορρίψεων", step: 15 },
+];
+const AML_CASE_DECISIONS = { pending: "Υπό εξέταση", reported: "Αναφέρθηκε στην Αρχή", not_reported: "Εξετάστηκε — δεν αναφέρθηκε", abstained: "Αποχή από συναλλαγή (άρ. 23)" };
+const AML_CASE_TONE = { pending: "danger", reported: "accent", not_reported: "neutral", abstained: "warn" };
+const AML_AUTHORITIES = ["ΑΑΔΕ (εποπτική αρχή)", "Αρχή Καταπολέμησης Νομιμοποίησης Εσόδων", "Υπουργείο Οικονομικών", "Εισαγγελία / Δικαστήριο", "Άλλη δημόσια αρχή"];
+const mapAmlCase = (r) => ({ id: r.id, clientId: r.client_id || null, detectedOn: r.detected_on, detectedBy: r.detected_by || null, description: r.description, decision: r.decision, decisionOn: r.decision_on || "", decidedBy: r.decided_by || null, reportRef: r.report_ref || "", rationale: r.rationale || "", createdAt: r.created_at });
+const mapAuthorityRequest = (r) => ({ id: r.id, authority: r.authority, receivedOn: r.received_on, dueOn: r.due_on || "", subject: r.subject, clientId: r.client_id || null, status: r.status, answeredOn: r.answered_on || "", note: r.note || "" });
+const DEFAULT_AML_FIRM = {
+  complianceOfficerId: "", appointmentDate: "", kmpdRegisteredOn: "", kmpdLastChangeOn: "", kmpdLastFiledOn: "",
+  e3PanelIYears: [], manualVersion: "", manualApprovedOn: "", manualNextReviewOn: "", lastTrainingOn: "", lastInternalAuditOn: "",
+  registerVersion: "1.0", registerDate: "", registerApprovedBy: "", methodologyModel: "A",
+  selfAssessment: {}, steps: {}, fileDocs: {},
+};
+const addMonths = (d, m) => { const r = new Date(d); r.setMonth(r.getMonth() + m); return r; };
+const daysUntil = (key) => key ? Math.round((fromKey(key) - TODAY) / 86400000) : null;
+
+// ---- Alerts engine: every reporting / review / filing obligation that is
+// due, with a due date and severity. Pure function, used by the Compliance
+// page and the dashboard.
+function amlAlerts({ clients, amlRecords, cases, requests, amlFirm, employees }) {
+  const out = [];
+  const push = (severity, kind, title, detail, dueKey, clientId) => out.push({ severity, kind, title, detail, due: dueKey || null, clientId: clientId || null });
+  const year = TODAY.getFullYear();
+  const active = clients.filter((c) => c.lifecycle === "live" || c.lifecycle === "onboarding");
+  // Client files
+  active.forEach((c) => {
+    const a = amlRecords.find((x) => x.clientId === c.id);
+    if (!a) { push(c.lifecycle === "live" ? "high" : "medium", "file", `Χωρίς φάκελο δέουσας επιμέλειας: ${c.name}`, c.lifecycle === "live" ? "Υφιστάμενος πελάτης χωρίς KYC και αξιολόγηση κινδύνου (άρ. 13 παρ. 7)" : "Ταυτοποίηση πριν την έναρξη της σχέσης (άρ. 14 παρ. 1)", null, c.id); return; }
+    if (a.status === "declined") return;
+    if (c.lifecycle === "live" && a.status !== "completed") push("high", "file", `Ανολοκλήρωτος φάκελος: ${c.name}`, "Ο πελάτης είναι live ενώ η δέουσα επιμέλεια δεν έχει ολοκληρωθεί (άρ. 14 παρ. 1-2)", null, c.id);
+    if (a.riskLevel === "high" && !a.approvedBy) push("high", "approval", `Εκκρεμεί έγκριση ανώτερου στελέχους: ${c.name}`, "Υψηλός κίνδυνος / ΠΕΠ χωρίς γραπτή έγκριση (άρ. 16Α, 18)", null, c.id);
+    if (a.nextReviewOn) {
+      const d = daysUntil(a.nextReviewOn);
+      if (d < 0) push("high", "review", `Επανεξέταση σε καθυστέρηση: ${c.name}`, `Έπρεπε ${a.nextReviewOn} (${AML_LEVEL_LABELS[a.riskLevel]} κίνδυνος)`, a.nextReviewOn, c.id);
+      else if (d <= 30) push("medium", "review", `Επανεξέταση εντός 30 ημερών: ${c.name}`, `Προγραμματισμένη ${a.nextReviewOn}`, a.nextReviewOn, c.id);
+    } else if (a.status === "completed") push("medium", "review", `Χωρίς ημερομηνία επανεξέτασης: ${c.name}`, "Ορίστε επόμενη επικαιροποίηση (Βήμα 14)", null, c.id);
+    if (a.uboChangeDate && !a.uboFiledDate) {
+      const deadline = toKey(addDays(fromKey(a.uboChangeDate), 60));
+      const d = daysUntil(deadline);
+      push(d < 0 ? "high" : "medium", "kmpd", `Μεταβολή πραγματικού δικαιούχου — ΚΜΠΔ: ${c.name}`, `Καταχώριση εντός 60 ημερών από ${a.uboChangeDate} (άρ. 20 παρ. 1) — προθεσμία ${deadline}${d < 0 ? ", εκπρόθεσμη" : ""}`, deadline, c.id);
+    }
+    if (a.pepStatus !== "none" && a.riskLevel !== "high") push("high", "file", `ΠΕΠ χωρίς κατάταξη σε υψηλό κίνδυνο: ${c.name}`, "Το άρθρο 18 υπερισχύει — ελέγξτε την αξιολόγηση", null, c.id);
+  });
+  // Cases
+  (cases || []).filter((k) => k.decision === "pending").forEach((k) => {
+    const d = -daysUntil(k.detectedOn);
+    push(d > 7 ? "high" : "medium", "case", `Περιστατικό υπό εξέταση${k.clientId ? `: ${clients.find((c) => c.id === k.clientId)?.name || ""}` : ""}`, `Εντοπίστηκε ${k.detectedOn} — απόφαση αναφοράς «αμελλητί» (άρ. 22). Μην ενημερώσετε τον πελάτη (άρ. 27).`, k.detectedOn, k.clientId);
+  });
+  // Authority requests
+  (requests || []).filter((r) => r.status === "open").forEach((r) => {
+    const d = daysUntil(r.dueOn);
+    push(d !== null && d < 0 ? "high" : d !== null && d <= 7 ? "high" : "medium", "request", `Αίτημα αρχής: ${r.authority}`, `${r.subject}${r.dueOn ? ` — προθεσμία ${r.dueOn}` : " — χωρίς προθεσμία, απάντηση «αμελλητί» (άρ. 22 παρ. 1β)"}`, r.dueOn || null, r.clientId);
+  });
+  // Firm-level
+  const f = { ...DEFAULT_AML_FIRM, ...(amlFirm || {}) };
+  if (!f.complianceOfficerId) push("high", "firm", "Δεν έχει οριστεί υπεύθυνος συμμόρφωσης", "Γραπτή πράξη ορισμού (άρ. 35 παρ. 3α, ερώτημα 3)");
+  if (!f.kmpdRegisteredOn) push("high", "firm", "Το γραφείο δεν έχει καταχωριστεί στο ΚΜΠΔ", "Άρ. 20 — ερώτημα 20 του ελέγχου");
+  if (f.kmpdLastChangeOn && !f.kmpdLastFiledOn) { const dl = toKey(addDays(fromKey(f.kmpdLastChangeOn), 60)); push(daysUntil(dl) < 0 ? "high" : "medium", "firm", "Μεταβολή πραγματικών δικαιούχων του γραφείου — ΚΜΠΔ", `Καταχώριση έως ${dl} (60 ημέρες, άρ. 20 παρ. 1)`, dl); }
+  if (!(f.e3PanelIYears || []).includes(year - 1)) push(TODAY.getMonth() >= 3 ? "high" : "medium", "firm", `Πίνακας Ι΄ του Ε3 για το φορολογικό έτος ${year - 1}`, "Συμπληρώνεται με τη δήλωση εισοδήματος του γραφείου (ερώτημα 21)", `${year}-07-31`);
+  if (!f.manualApprovedOn) push("high", "firm", "Χωρίς εγκεκριμένο Εγχειρίδιο Πολιτικών και Διαδικασιών", "Βήμα 10 — ερώτημα 2");
+  else if (f.manualNextReviewOn && daysUntil(f.manualNextReviewOn) < 30) push(daysUntil(f.manualNextReviewOn) < 0 ? "high" : "medium", "firm", "Επανεξέταση του Εγχειριδίου", `Προγραμματισμένη ${f.manualNextReviewOn}`, f.manualNextReviewOn);
+  if (!f.lastTrainingOn || daysUntil(toKey(addMonths(fromKey(f.lastTrainingOn), 12))) < 0) push("medium", "firm", "Ετήσια εκπαίδευση προσωπικού", f.lastTrainingOn ? `Τελευταία ${f.lastTrainingOn} — πάνω από 12 μήνες (άρ. 37)` : "Δεν έχει καταγραφεί εκπαίδευση (ερώτημα 1)", f.lastTrainingOn ? toKey(addMonths(fromKey(f.lastTrainingOn), 12)) : null);
+  if (!f.lastInternalAuditOn || daysUntil(toKey(addMonths(fromKey(f.lastInternalAuditOn), 12))) < 0) push("medium", "firm", "Ετήσιος εσωτερικός έλεγχος / αυτοαξιολόγηση", f.lastInternalAuditOn ? `Τελευταίο πόρισμα ${f.lastInternalAuditOn}` : "Δεν έχει καταγραφεί πόρισμα (άρ. 35 παρ. 3γ, ερώτημα 4)", f.lastInternalAuditOn ? toKey(addMonths(fromKey(f.lastInternalAuditOn), 12)) : null);
+  const newerThanRegister = f.registerDate ? amlRecords.filter((a) => a.assessmentDate && a.assessmentDate > f.registerDate).length : amlRecords.length;
+  if (newerThanRegister > 0) push("medium", "register", "Νέα έκδοση συγκεντρωτικής κατάστασης πελατών", `${newerThanRegister} αξιολόγηση(-εις) μετά την έκδοση ${f.registerVersion || "—"}${f.registerDate ? ` της ${f.registerDate}` : ""} (άρ. 35 παρ. 2, Βήμα 9)`);
+  const sevRank = { high: 0, medium: 1, low: 2 };
+  return out.sort((x, y) => sevRank[x.severity] - sevRank[y.severity] || (x.due || "9999").localeCompare(y.due || "9999"));
+}
 const mapContact = (r) => ({ id: r.id, clientId: r.client_id, name: r.name, role: r.role || "", email: r.email || "", phone: r.phone || "", note: r.note || "", isPrimary: !!r.is_primary });
 const mapNote = (r) => ({ id: r.id, clientId: r.client_id, authorId: r.author_id || null, kind: r.kind, noteDate: r.note_date, content: r.content, createdAt: r.created_at });
 const mapTask = (r) => ({ id: r.id, clientId: r.client_id || null, kind: r.kind || "general", stage: r.stage || null, title: r.title, description: r.description || "", assignedTo: r.assigned_to || null, createdBy: r.created_by || null, dueDate: r.due_date || null, priority: r.priority, status: r.status, doneAt: r.done_at || null, createdAt: r.created_at });
@@ -2015,16 +2175,17 @@ function TeamCalendar({ employees, leaveRequests }) {
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
 
-function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, tasks = [], onOpenCard, templates = [] }) {
+function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
-    statCards: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
+    statCards: true, billingPanel: true, ddPanel: true, compliancePanel: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
     monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
-  const config = configRaw || DEFAULT_DASHBOARD_CONFIG;
+  // Merge with the defaults so panels added later (billing, compliance, tasks…) appear even when a layout was saved earlier.
+  const config = { ...DEFAULT_DASHBOARD_CONFIG, ...(configRaw || {}) };
   const [customizing, setCustomizing] = useState(false);
 
   const [rangeStart, rangeEnd] = periodRange(period, anchor);
@@ -2302,7 +2463,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   ].map((r) => ({ ...r, vsPrev: pctChange(r.value, prevTotals[r.key]), vsYoy: pctChange(r.value, yoyTotals[r.key]) }));
 
   const CONFIG_LABELS = {
-    statCards: "Summary cards", onboardingPanel: "Pipeline — leads & onboarding", tasksPanel: "Tasks — overdue & due this week", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
+    statCards: "Summary cards", billingPanel: "Billing — outstanding alert", ddPanel: "Due diligence — client files alert", compliancePanel: "AML compliance alerts (firm, reports, authorities)", onboardingPanel: "Pipeline — leads & onboarding", tasksPanel: "Tasks — overdue & due this week", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
     byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
     monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
     companyMonthlyTable: "Company overview, by month",
@@ -2351,6 +2512,124 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           <StatCard label="Avg. effective rate" value={fmtEur(avgEffectiveRate) + "/h"} sub="Revenue ÷ hours worked" />
         </div>
       )}
+
+      {config.billingPanel && (() => {
+        const lines = computeBillingLines(clients, billingStatuses);
+        const overdue = lines.filter((l) => l.status === "overdue");
+        const unpaid = lines.filter((l) => ["invoiced", "partial", "overdue"].includes(l.status));
+        const notInvoiced = lines.filter((l) => l.status === "pending");
+        if (unpaid.length === 0 && notInvoiced.length === 0) return null;
+        const sum = (arr, f) => arr.reduce((t, l) => t + f(l), 0);
+        const overdueAmt = sum(overdue, (l) => l.outstanding), unpaidAmt = sum(unpaid, (l) => l.outstanding), pendingAmt = sum(notInvoiced, (l) => l.amount);
+        const cname = (id) => clients.find((c) => c.id === id)?.name || "—";
+        // Worst first: overdue by days, then other unpaid by days, then not invoiced by month.
+        const worst = [...overdue].sort((a, b) => (b.daysSinceInvoice || 0) - (a.daysSinceInvoice || 0));
+        return (
+          <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${overdue.length ? C.danger : C.warn}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Billing — {overdue.length ? `${fmtEur(overdueAmt)} overdue` : `${fmtEur(unpaidAmt)} awaiting payment`}</div>
+                <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>
+                  {overdue.length} overdue line{overdue.length === 1 ? "" : "s"} (invoiced more than {BILLING_OVERDUE_DAYS} days ago) · {fmtEur(unpaidAmt)} invoiced and unpaid · {fmtEur(pendingAmt)} not invoiced yet ({notInvoiced.length} line{notInvoiced.length === 1 ? "" : "s"})
+                </div>
+              </div>
+              <Btn size="sm" variant="secondary" onClick={onOpenBilling}>Open billing</Btn>
+            </div>
+            {worst.slice(0, 5).map((l) => (
+              <div key={l.key} style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: `1px solid ${C.border}`, fontFamily: sans, fontSize: 12.5, alignItems: "center" }}>
+                <Badge tone="danger">Overdue</Badge>
+                <span style={{ fontWeight: 600, flex: 1 }}>{cname(l.clientId)} <span style={{ fontWeight: 400, color: C.inkMuted }}>· {l.kind === "fixed" ? "Fixed fee" : `Extra${l.note ? ` — ${l.note}` : ""}`} {l.month}</span></span>
+                <span style={{ fontFamily: mono, color: C.inkMuted }}>{l.daysSinceInvoice}d</span>
+                <span style={{ fontFamily: mono, fontWeight: 700, minWidth: 90, textAlign: "right" }}>{fmtEur(l.outstanding)}</span>
+              </div>
+            ))}
+            {worst.length > 5 && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, paddingTop: 6 }}>…and {worst.length - 5} more overdue line{worst.length - 5 === 1 ? "" : "s"}.</div>}
+          </Panel>
+        );
+      })()}
+
+      {config.ddPanel && (() => {
+        // Δέουσα επιμέλεια per client: coverage of the client base and the
+        // client-level obligations that need action.
+        const DD_KINDS = ["file", "approval", "review", "kmpd"];
+        const ddAlerts = complianceAlerts.filter((a) => a.clientId && DD_KINDS.includes(a.kind));
+        const active = clients.filter((c) => ["live", "onboarding"].includes(c.lifecycle));
+        if (active.length === 0) return null;
+        const rec = (c) => amlRecords.find((a) => a.clientId === c.id) || null;
+        const completed = active.filter((c) => rec(c)?.status === "completed").length;
+        const inProgress = active.filter((c) => rec(c) && ["in_progress"].includes(rec(c).status)).length;
+        const noFile = active.filter((c) => !rec(c) || rec(c).status === "not_started").length;
+        const highAwaiting = active.filter((c) => rec(c)?.riskLevel === "high" && rec(c).status !== "declined" && !rec(c).approvedBy).length;
+        const reviewsOverdue = active.filter((c) => rec(c)?.nextReviewOn && daysUntil(rec(c).nextReviewOn) < 0).length;
+        const reviewsSoon = active.filter((c) => rec(c)?.nextReviewOn && daysUntil(rec(c).nextReviewOn) >= 0 && daysUntil(rec(c).nextReviewOn) <= 30).length;
+        const kmpd = ddAlerts.filter((a) => a.kind === "kmpd").length;
+        if (ddAlerts.length === 0 && completed === active.length) return null;
+        const urgent = ddAlerts.filter((a) => a.severity === "high").length;
+        const pct = Math.round((completed / active.length) * 100);
+        const items = [
+          { label: "Χωρίς φάκελο", value: noFile, bad: noFile > 0 },
+          { label: "Σε εξέλιξη", value: inProgress, bad: false, warn: inProgress > 0 },
+          { label: "Υψηλός κίνδυνος χωρίς έγκριση", value: highAwaiting, bad: highAwaiting > 0 },
+          { label: "Επανεξέταση σε καθυστέρηση", value: reviewsOverdue, bad: reviewsOverdue > 0 },
+          { label: "Επανεξέταση ≤ 30 ημέρες", value: reviewsSoon, bad: false, warn: reviewsSoon > 0 },
+          { label: "ΚΜΠΔ — μεταβολή UBO (60 ημ.)", value: kmpd, bad: kmpd > 0 },
+        ];
+        return (
+          <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${urgent > 0 ? C.danger : C.warn}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Δέουσα επιμέλεια πελατών — {completed}/{active.length} φάκελοι ολοκληρωμένοι{urgent > 0 ? ` · ${urgent} επείγοντα` : ""}</div>
+                <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>ν. 4557/2018 — ταυτοποίηση πριν την έναρξη της σχέσης (άρ. 14), έγκριση υψηλού κινδύνου (άρ. 16Α, 18), επανεξέταση (άρ. 13 παρ. 7), ΚΜΠΔ (άρ. 20).</div>
+              </div>
+              <Btn size="sm" variant="secondary" onClick={onOpenCompliance}>Open compliance</Btn>
+            </div>
+            <div style={{ height: 8, background: C.border, borderRadius: 4, overflow: "hidden", marginBottom: 10 }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? C.accent : C.warn }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {items.map((it) => (
+                <div key={it.label} style={{ border: `1px solid ${it.bad ? C.danger : it.warn ? C.warn : C.border}`, background: it.bad ? "#FDECEC" : "transparent", borderRadius: 7, padding: "5px 10px", fontFamily: sans, fontSize: 12 }}>
+                  <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 14, color: it.bad ? C.danger : it.warn ? C.warn : C.inkFaint, marginRight: 6 }}>{it.value}</span>{it.label}
+                </div>
+              ))}
+            </div>
+            {ddAlerts.slice(0, 8).map((a, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: `1px solid ${C.border}`, fontFamily: sans, fontSize: 12.5, alignItems: "baseline" }}>
+                <Badge tone={a.severity === "high" ? "danger" : "warn"}>{a.severity === "high" ? "Urgent" : "Upcoming"}</Badge>
+                <span style={{ flex: 1 }}>
+                  <button onClick={() => onOpenCard(a.clientId, "dd")} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, fontWeight: 600, color: C.accentDark, textDecoration: "underline" }}>{a.title}</button>
+                  <span style={{ color: C.inkMuted }}> — {a.detail}</span>
+                </span>
+                <span style={{ fontFamily: mono, color: C.inkMuted }}>{a.due || ""}</span>
+              </div>
+            ))}
+            {ddAlerts.length > 8 && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, paddingTop: 6 }}>…και {ddAlerts.length - 8} ακόμα — δες το tab Alerts στο AML Compliance.</div>}
+          </Panel>
+        );
+      })()}
+
+      {config.compliancePanel && (() => {
+        const rest = complianceAlerts.filter((a) => !(a.clientId && ["file", "approval", "review", "kmpd"].includes(a.kind)));
+        if (rest.length === 0) return null;
+        return (
+          <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${rest.some((a) => a.severity === "high") ? C.danger : C.warn}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div>
+                <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>AML compliance γραφείου — {rest.filter((a) => a.severity === "high").length} urgent, {rest.filter((a) => a.severity !== "high").length} upcoming</div>
+                <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Υποχρεώσεις του γραφείου, αναφορές προς την Αρχή και αιτήματα αρχών (ΑΑΔΕ, Αρχή) — ν. 4557/2018.</div>
+              </div>
+              <Btn size="sm" variant="secondary" onClick={onOpenCompliance}>Open compliance</Btn>
+            </div>
+            {rest.slice(0, 6).map((a, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: `1px solid ${C.border}`, fontFamily: sans, fontSize: 12.5 }}>
+                <Badge tone={a.severity === "high" ? "danger" : "warn"}>{a.severity === "high" ? "Urgent" : "Upcoming"}</Badge>
+                <span style={{ fontWeight: 600, flex: 1 }}>{a.clientId ? <button onClick={() => onOpenCard(a.clientId, "dd")} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, fontWeight: 600, color: C.accentDark, textDecoration: "underline" }}>{a.title}</button> : a.title}</span>
+                <span style={{ fontFamily: mono, color: C.inkMuted }}>{a.due || ""}</span>
+              </div>
+            ))}
+          </Panel>
+        );
+      })()}
 
       {config.onboardingPanel && (() => {
         const leads = clients.filter((c) => c.lifecycle === "lead");
@@ -4653,6 +4932,20 @@ function billingLines(clients) {
   return lines;
 }
 
+// Every billable line with its follow-up status, paid/outstanding amounts and
+// days since invoice — used by the Billing page and the Dashboard alert.
+function computeBillingLines(clients, billingStatuses) {
+  const statusByKey = Object.fromEntries(billingStatuses.map((s) => [s.kind === "fixed" ? `fixed|${s.clientId}|${s.month}` : `extra|${s.extraFeeId}`, s]));
+  const nameOf = (id) => clients.find((c) => c.id === id)?.name || "";
+  return billingLines(clients).map((l) => {
+    const st = statusByKey[l.key] || null;
+    const status = billingLineStatus(l, st);
+    const paidAmount = st?.paidDate ? (st.paidAmount ?? l.amount) : 0;
+    const daysSinceInvoice = st?.invoicedDate && !st?.paidDate ? Math.round((TODAY - fromKey(st.invoicedDate)) / 86400000) : null;
+    return { ...l, st, status, paidAmount, outstanding: l.amount - paidAmount, daysSinceInvoice };
+  }).sort((a, b) => b.month.localeCompare(a.month) || nameOf(a.clientId).localeCompare(nameOf(b.clientId)) || (a.kind === "fixed" ? -1 : 1));
+}
+
 function billingLineStatus(line, st) {
   if (!st) return "pending";
   if (st.paidDate) {
@@ -4677,21 +4970,17 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
   const [fPaidDate, setFPaidDate] = useState("");
   const [fPaidAmount, setFPaidAmount] = useState("");
   const [fNote, setFNote] = useState("");
+  const [selected, setSelected] = useState(() => new Set());
+  const [allMonths, setAllMonths] = useState(false);
+  const [bulkPaidModal, setBulkPaidModal] = useState(false);
+  const [bulkPaidDate, setBulkPaidDate] = useState(toKey(TODAY));
 
   const clientName = (id) => clients.find((c) => c.id === id)?.name || "—";
-  const statusByKey = Object.fromEntries(billingStatuses.map((s) => [s.kind === "fixed" ? `fixed|${s.clientId}|${s.month}` : `extra|${s.extraFeeId}`, s]));
-
-  const allLines = billingLines(clients).map((l) => {
-    const st = statusByKey[l.key] || null;
-    const status = billingLineStatus(l, st);
-    const paidAmount = st?.paidDate ? (st.paidAmount ?? l.amount) : 0;
-    const daysSinceInvoice = st?.invoicedDate && !st?.paidDate ? Math.round((TODAY - fromKey(st.invoicedDate)) / 86400000) : null;
-    return { ...l, st, status, paidAmount, outstanding: l.amount - paidAmount, daysSinceInvoice };
-  }).sort((a, b) => b.month.localeCompare(a.month) || clientName(a.clientId).localeCompare(clientName(b.clientId)) || (a.kind === "fixed" ? -1 : 1));
+  const allLines = computeBillingLines(clients, billingStatuses);
 
   const [rangeStart, rangeEnd] = periodRange(viewPeriod, viewAnchor);
   const fromM = monthKeyOf(rangeStart), toM = monthKeyOf(rangeEnd);
-  const inRange = allLines.filter((l) => l.month >= fromM && l.month <= toM);
+  const inRange = allMonths ? allLines : allLines.filter((l) => l.month >= fromM && l.month <= toM);
   const visible = inRange
     .filter((l) => clientFilter === "all" || l.clientId === clientFilter)
     .filter((l) => statusFilter === "all" || (statusFilter === "open" ? l.status !== "paid" : l.status === statusFilter));
@@ -4759,6 +5048,57 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
     refetchBilling();
   }
 
+  // ---- Mass actions on the ticked lines ----
+  const selectable = visible.filter((l) => l.status !== "paid");
+  const selectedLines = allLines.filter((l) => selected.has(l.key) && l.status !== "paid");
+  const selectedTotal = selectedLines.reduce((s, l) => s + l.outstanding, 0);
+  const selectedPending = selectedLines.filter((l) => l.status === "pending").length;
+  const allSelectableTicked = selectable.length > 0 && selectable.every((l) => selected.has(l.key));
+  const toggleLine = (key) => setSelected((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const toggleAllVisible = () => setSelected((prev) => { const n = new Set(prev); if (allSelectableTicked) selectable.forEach((l) => n.delete(l.key)); else selectable.forEach((l) => n.add(l.key)); return n; });
+  // Quick select looks at every month (so old unpaid lines are included) and
+  // switches the table to "All months" so the ticked lines are visible.
+  const selectByStatus = (statuses) => {
+    setAllMonths(true);
+    setSelected(new Set(allLines.filter((l) => (clientFilter === "all" || l.clientId === clientFilter) && statuses.includes(l.status)).map((l) => l.key)));
+  };
+
+  // Marks every ticked line as paid in full on one date. Lines that were
+  // never invoiced are invoiced on the same date, so the record stays consistent.
+  async function bulkMarkPaid() {
+    if (!bulkPaidDate) { window.alert("Choose the payment date."); return; }
+    const now = new Date().toISOString();
+    const withInvoice = selectedLines.filter((l) => l.st?.invoicedDate);
+    const withRowNoInvoice = selectedLines.filter((l) => l.st && !l.st.invoicedDate);
+    const noRow = selectedLines.filter((l) => !l.st);
+    const errors = [];
+    if (withInvoice.length) {
+      const { error } = await supabase.from("billing_status").update({ paid_date: bulkPaidDate, paid_amount: null, updated_at: now }).in("id", withInvoice.map((l) => l.st.id));
+      if (error) errors.push(error.message);
+    }
+    if (withRowNoInvoice.length) {
+      const { error } = await supabase.from("billing_status").update({ invoiced_date: bulkPaidDate, paid_date: bulkPaidDate, paid_amount: null, updated_at: now }).in("id", withRowNoInvoice.map((l) => l.st.id));
+      if (error) errors.push(error.message);
+    }
+    if (noRow.length) {
+      const { error } = await supabase.from("billing_status").insert(noRow.map((l) => ({ ...statusRow(l), invoiced_date: bulkPaidDate, paid_date: bulkPaidDate })));
+      if (error) errors.push(error.message);
+    }
+    if (errors.length) window.alert(`Some lines could not be updated: ${errors.join("; ")}`);
+    await refetchBilling();
+    setSelected(new Set());
+    setBulkPaidModal(false);
+  }
+  // Marks the ticked lines that are still "Not invoiced" as invoiced today.
+  async function bulkMarkInvoiced() {
+    const pending = selectedLines.filter((l) => l.status === "pending");
+    if (pending.length === 0) return;
+    const { error } = await supabase.from("billing_status").insert(pending.map((l) => ({ ...statusRow(l), invoiced_date: toKey(TODAY) })));
+    if (error) { window.alert(`Couldn't update: ${error.message}`); return; }
+    await refetchBilling();
+    setSelected(new Set());
+  }
+
   function exportBilling() {
     exportToExcel(`billing-monitor-${toKey(TODAY)}.xlsx`, [
       { name: "Lines", rows: visible.map((l) => ({
@@ -4816,7 +5156,12 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
           <div>
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 8 }}>Fee lines</div>
-            <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", opacity: allMonths ? 0.5 : 1 }}>
+              <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: sans, fontSize: 12.5, color: C.ink, marginTop: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={allMonths} onChange={(e) => setAllMonths(e.target.checked)} /> Show all months (ignore the period above)
+            </label>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Field label="Client">
@@ -4837,9 +5182,25 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
         {visible.length === 0 ? (
           <EmptyState icon={Receipt} title="No fee lines match" sub="Change the period or filters." />
         ) : (
-          <TableShell headers={["Month", "Client", "Type", "Amount", "Invoiced", "Paid", "Status", ""]}>
+          <>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Quick select:</span>
+            <Btn size="sm" variant="ghost" onClick={() => selectByStatus(["overdue"])}>Overdue</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => selectByStatus(["invoiced", "partial", "overdue"])}>All invoiced, unpaid</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => selectByStatus(["pending"])}>Not invoiced</Btn>
+            {selected.size > 0 && <Btn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Btn>}
+            {selectedLines.length > 0 && (
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", background: C.accentSoft, borderRadius: 8, padding: "6px 10px" }}>
+                <span style={{ fontFamily: sans, fontSize: 12.5, color: C.ink }}><strong>{selectedLines.length}</strong> selected · {fmtEur(selectedTotal)}</span>
+                {selectedPending > 0 && <Btn size="sm" variant="secondary" icon={Receipt} onClick={bulkMarkInvoiced}>Mark {selectedPending} invoiced</Btn>}
+                <Btn size="sm" icon={Wallet} onClick={() => { setBulkPaidDate(toKey(TODAY)); setBulkPaidModal(true); }}>Mark selected as paid</Btn>
+              </div>
+            )}
+          </div>
+          <TableShell headers={[<input key="all" type="checkbox" checked={allSelectableTicked} onChange={toggleAllVisible} disabled={selectable.length === 0} title="Select all open lines on screen" />, "Month", "Client", "Type", "Amount", "Invoiced", "Paid", "Status", ""]}>
             {visible.map((l) => (
-              <tr key={l.key}>
+              <tr key={l.key} style={{ background: selected.has(l.key) ? C.accentSoft : undefined }}>
+                <Td>{l.status !== "paid" ? <input type="checkbox" checked={selected.has(l.key)} onChange={() => toggleLine(l.key)} /> : null}</Td>
                 <Td mono>{l.month}</Td>
                 <Td>{clientName(l.clientId)}</Td>
                 <Td style={{ color: C.inkMuted }} title={l.note || undefined}>{l.kind === "fixed" ? "Fixed fee" : `Extra${l.note ? ` — ${l.note}` : ""}`}</Td>
@@ -4864,15 +5225,39 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
               </tr>
             ))}
             <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
-              <Td>Total</Td><Td /><Td />
+              <Td /><Td>Total</Td><Td /><Td />
               <Td mono>{fmtEur(visible.reduce((s, l) => s + l.amount, 0))}</Td>
               <Td mono>{fmtEur(visible.filter((l) => l.st?.invoicedDate).reduce((s, l) => s + l.amount, 0))}</Td>
               <Td mono>{fmtEur(visible.reduce((s, l) => s + l.paidAmount, 0))}</Td>
               <Td /><Td />
             </tr>
           </TableShell>
+          </>
         )}
       </Panel>
+
+      {bulkPaidModal && (
+        <Modal title={`Mark ${selectedLines.length} line${selectedLines.length === 1 ? "" : "s"} as paid`} onClose={() => setBulkPaidModal(false)} width={440}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, background: C.accentSoft, borderRadius: 7, padding: "8px 10px" }}>
+              Total outstanding on the selected lines: <strong>{fmtEur(selectedTotal)}</strong>. Each line is recorded as paid in full on the date below.
+              {selectedPending > 0 ? ` ${selectedPending} line(s) were never marked as invoiced — they are recorded as invoiced on the same date.` : ""}
+            </div>
+            <Field label="Payment date"><input type="date" style={inputStyle} value={bulkPaidDate} onChange={(e) => setBulkPaidDate(e.target.value)} autoFocus /></Field>
+            <div style={{ maxHeight: 170, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 7, padding: "4px 8px" }}>
+              {selectedLines.map((l) => (
+                <div key={l.key} style={{ display: "flex", justifyContent: "space-between", fontFamily: sans, fontSize: 12, padding: "2px 0", color: C.ink }}>
+                  <span>{l.month} · {clientName(l.clientId)} · {l.kind === "fixed" ? "Fixed" : "Extra"}</span><span style={{ fontFamily: mono }}>{fmtEur(l.outstanding)}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setBulkPaidModal(false)}>Cancel</Btn>
+              <Btn icon={Check} onClick={bulkMarkPaid}>Mark as paid</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {editing && (
         <Modal title={`${clientName(editing.clientId)} — ${editing.kind === "fixed" ? "Fixed fee" : "Extra fee"} ${editing.month}`} onClose={() => setEditing(null)} width={440}>
@@ -5752,8 +6137,8 @@ function buildDueDiligenceHtml({ client, aml, ubos, documents, employees, tasks 
   <h2>4. Σκοπός και φύση της σχέσης</h2>
   ${kv([["Δραστηριότητα", a.activity], ["Χώρες", a.countries], ["Υπηρεσίες", (a.services || []).join(", ")], ["Σκοπός / αναμενόμενη συναλλακτική εικόνα", a.relationshipPurpose], ["Πηγές πληροφοριών", a.infoSources], ["Πηγή πλούτου / προέλευση κεφαλαίων", a.sourceOfFunds]])}
   <h2>5. Αξιολόγηση κινδύνου (Μοντέλο Α — 4 άξονες)</h2>
-  <table><tr><th>Άξονας</th><th>Παράγοντας</th><th>Παράρτημα / διάταξη</th><th>Βαθμοί</th></tr>${chosen.length === 0 ? "<tr><td colspan='4'>Κανένας παράγοντας</td></tr>" : chosen.map((f) => `<tr><td>${f.axis}</td><td>${escapeHtml(f.label)}</td><td>${escapeHtml(f.ref)}</td><td>${f.override ? "ΥΠΕΡΙΣΧΥΕΙ" : (f.points > 0 ? "+" : "") + f.points}</td></tr>`).join("")}</table>
-  ${kv([["Άθροισμα", `${assessed.score >= 0 ? "+" : ""}${assessed.score}`], ["Κατάταξη", `${AML_LEVEL_LABELS[level]}${a.riskOverride && !assessed.forced ? ` (τεκμηριωμένη απόκλιση από ${AML_LEVEL_LABELS[assessed.level]}: ${a.riskOverrideReason || ""})` : ""}`], ["Επίπεδο δέουσας επιμέλειας", AML_DD_LABELS[a.ddLevel || AML_DD_FOR_LEVEL[level]]], ["Έγκριση ανώτερου στελέχους", a.approvedBy ? `${empName(a.approvedBy)} · ${a.approvedOn || ""}` : (level === "high" ? "ΕΚΚΡΕΜΕΙ" : "Δεν απαιτείται")]])}
+  <table><tr><th>Άξονας</th><th>Παράγοντας</th><th>Παράρτημα / διάταξη</th><th>Βαθμοί</th><th>Τεκμηρίωση</th></tr>${chosen.length === 0 ? "<tr><td colspan='5'>Κανένας παράγοντας</td></tr>" : chosen.map((f) => `<tr><td>${f.axis}</td><td>${escapeHtml(f.label)}</td><td>${escapeHtml(f.ref)}</td><td>${f.override ? "ΥΠΕΡΙΣΧΥΕΙ" : (f.points > 0 ? "+" : "") + f.points}</td><td>${escapeHtml((a.riskFactorNotes || {})[f.key] || "")}</td></tr>`).join("")}</table>
+  ${kv([["Άθροισμα (Μοντέλο Α)", `${assessed.score >= 0 ? "+" : ""}${assessed.score}`], ["Βαθμός 0-100 (Μοντέλο Β)", String(amlAssessB(a.riskFactors || []).score)], ["Τύπος / έκδοση φύλλου", `${AML_ASSESSMENT_TYPES[a.assessmentType || "initial"]} · έκδοση ${a.sheetVersion || 1} · ${a.assessmentDate || ""}`], ["Κατάταξη", `${AML_LEVEL_LABELS[level]}${a.riskOverride && !assessed.forced ? ` (τεκμηριωμένη απόκλιση από ${AML_LEVEL_LABELS[assessed.level]}: ${a.riskOverrideReason || ""})` : ""}`], ["Επίπεδο δέουσας επιμέλειας", AML_DD_LABELS[a.ddLevel || AML_DD_FOR_LEVEL[level]]], ["Έγκριση ανώτερου στελέχους", a.approvedBy ? `${empName(a.approvedBy)} · ${a.approvedOn || ""}` : (level === "high" ? "ΕΚΚΡΕΜΕΙ" : "Δεν απαιτείται")]])}
   <h2>6. Έγγραφα φακέλου</h2>
   <table><tr><th>Έγγραφο</th><th>Συλλέχθηκε</th><th>Ημερομηνία</th><th>Αρχείο στο σύστημα</th></tr>${docsForType.map((d) => { const st = (a.documents || {})[d.key] || {}; const f = files.filter((x) => x.category === d.key); return `<tr><td>${escapeHtml(d.label)}</td><td>${st.collected ? "ΝΑΙ" : "—"}</td><td>${escapeHtml(st.date || "")}</td><td>${f.map((x) => `${escapeHtml(x.fileName)} (${x.uploadedAt.slice(0, 10)})`).join("<br/>") || "—"}</td></tr>`; }).join("")}</table>
   <h2>7. Βήματα διαδικασίας</h2>
@@ -5778,6 +6163,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
     relationshipPurpose: "", infoSources: "", services: [], sourceOfFunds: "", pepStatus: "none", pepDetails: "", sanctionsCheckedOn: "", sanctionsResult: "",
     proxyName: "", proxyIdNumber: "", riskFactors: ["b_eu"], riskScore: 0, riskLevel: "medium", riskOverride: "", riskOverrideReason: "", ddLevel: "standard", documents: {},
     status: "not_started", completedOn: "", completedBy: null, approvedBy: null, approvedOn: "", nextReviewOn: "", notes: "", decision: "", decisionReason: "", uboActionsRecord: "",
+    riskFactorNotes: {}, assessmentType: "initial", assessmentDate: toKey(TODAY), sheetVersion: 1, riskScoreB: 0, uboChangeDate: "", uboFiledDate: "",
   };
   const withRep = (a) => ({ ...a, entityType: a.entityType || defaultEntity, representativeName: a.representativeName || client.representativeName || "", representativeAfm: a.representativeAfm || client.representativeAfm || "", representativeIdType: a.representativeIdType || client.representativeIdType || "", representativeIdNumber: a.representativeIdNumber || client.representativeIdNumber || "" });
   const init = aml ? withRep(aml) : blank;
@@ -5787,9 +6173,15 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
   const [u, setU] = useState({});
 
   const assessed = amlAssess(f.riskFactors);
+  const assessedB = amlAssessB(f.riskFactors);
   const effectiveLevel = assessed.forced ? "high" : (f.riskOverride || assessed.level);
   const ddLevel = AML_DD_FOR_LEVEL[effectiveLevel];
+  // "Πρακτικός κανόνας": an Annex II factor with a non-high classification
+  // needs a written justification on the sheet.
+  const annexIIPresent = AML_RISK_FACTORS.some((rf) => f.riskFactors.includes(rf.key) && (rf.points || 0) > 0);
+  const needsJustification = annexIIPresent && effectiveLevel !== "high" && !(f.riskOverrideReason || "").trim();
   const isLegal = f.entityType !== "natural";
+  const setFactorNote = (k, v) => set({ riskFactorNotes: { ...(f.riskFactorNotes || {}), [k]: v } });
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
   const toggleFactor = (k) => set({ riskFactors: f.riskFactors.includes(k) ? f.riskFactors.filter((x) => x !== k) : [...f.riskFactors, k] });
   const toggleService = (k) => set({ services: f.services.includes(k) ? f.services.filter((x) => x !== k) : [...f.services, k] });
@@ -5811,6 +6203,8 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
       dd_level: ddLevel, documents: f.documents, status: f.status === "not_started" ? "in_progress" : f.status,
       completed_on: f.completedOn || null, completed_by: f.completedBy || null, approved_by: f.approvedBy || null, approved_on: f.approvedOn || null,
       next_review_on: f.nextReviewOn || null, notes: f.notes || null, decision: f.decision || null, decision_reason: f.decisionReason || null, ubo_actions_record: f.uboActionsRecord || null,
+      risk_factor_notes: f.riskFactorNotes || {}, assessment_type: f.assessmentType || "initial", assessment_date: f.assessmentDate || toKey(TODAY), sheet_version: f.sheetVersion || 1, risk_score_b: amlAssessB(f.riskFactors).score,
+      ubo_change_date: f.uboChangeDate || null, ubo_filed_date: f.uboFiledDate || null,
       updated_at: new Date().toISOString(), ...extra,
     };
     const { error } = await supabase.from("client_aml").upsert(row, { onConflict: "client_id" });
@@ -5830,6 +6224,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
     if (!f.infoSources) missing.push("sources of the information");
     if (effectiveLevel === "high" && !f.approvedBy) missing.push("senior approval for high risk");
     if (ddLevel === "enhanced" && !f.sourceOfFunds) missing.push("source of wealth / origin of funds");
+    if (needsJustification) missing.push("written justification — Annex II factor without high classification");
     const docsMissing = docsRequired.filter((d) => !f.documents[d.key]?.collected).length;
     if (docsMissing) missing.push(`${docsMissing} required document(s)`);
     return missing;
@@ -5838,7 +6233,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
     const missing = checklist();
     if (missing.length && !window.confirm(`Still missing: ${missing.join("; ")}.\n\nComplete the file anyway? (άρ. 14 παρ. 2 allows verification to finish shortly after the initial contact only where the risk is low.)`)) return;
     const review = new Date(TODAY); review.setMonth(review.getMonth() + AML_REVIEW_MONTHS[effectiveLevel]);
-    const ok = await save({ status: "completed", decision: "accept", completed_on: toKey(TODAY), completed_by: user.id, next_review_on: f.nextReviewOn || toKey(review) });
+    const ok = await save({ status: "completed", decision: "accept", completed_on: toKey(TODAY), completed_by: user.id, next_review_on: f.nextReviewOn || toKey(review), assessment_date: f.assessmentDate || toKey(TODAY) });
     if (!ok) return;
     const open = tasks.filter((t) => t.clientId === client.id && t.kind === "onboarding" && t.stage === "aml" && t.status !== "done");
     if (open.length && window.confirm(`Also mark the ${open.length} due-diligence task(s) of the checklist as done?`)) {
@@ -5852,6 +6247,40 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
     await save({ status: "declined", decision: "decline", decision_reason: reason, completed_on: toKey(TODAY), completed_by: user.id });
   }
   async function reopen() { await save({ status: "in_progress", decision: null, completed_on: null, completed_by: null }); }
+  // Periodic / extraordinary review: new sheet version, today's date, keeps everything else.
+  async function startReview(type) {
+    const ok = await save({ status: "in_progress", assessment_type: type, assessment_date: toKey(TODAY), sheet_version: (f.sheetVersion || 1) + 1, completed_on: null, completed_by: null, next_review_on: null });
+    if (ok) window.alert(`Έκδοση φύλλου ${(f.sheetVersion || 1) + 1} — ${AML_ASSESSMENT_TYPES[type]} επανεξέταση. Ελέγξτε τους παράγοντες, τα έγγραφα και ολοκληρώστε ξανά τον φάκελο.`);
+  }
+  // Φύλλο αξιολόγησης κινδύνου — Excel, in the layout of the guide's template.
+  function exportRiskSheet() {
+    const rows = [];
+    AML_AXES.forEach((ax) => {
+      rows.push({ "Παράγοντας": ax.label, "Παράρτημα / διάταξη": "", "Βαθμοί (Α)": "", "Βαθμοί (Β)": "", "Συντρέχει;": "", "Μετρούν (Α)": "", "Τεκμηρίωση": "" });
+      AML_RISK_FACTORS.filter((rf) => rf.axis === ax.key && !rf.override).forEach((rf) => {
+        const on = f.riskFactors.includes(rf.key);
+        rows.push({ "Παράγοντας": rf.label, "Παράρτημα / διάταξη": rf.ref, "Βαθμοί (Α)": rf.points, "Βαθμοί (Β)": AML_MODEL_B_POINTS[rf.key] ?? "", "Συντρέχει;": on ? "ΝΑΙ" : "ΟΧΙ", "Μετρούν (Α)": on ? rf.points : 0, "Τεκμηρίωση": f.riskFactorNotes?.[rf.key] || "" });
+      });
+      rows.push({ "Παράγοντας": "Μερικό σύνολο άξονα", "Μετρούν (Α)": AML_RISK_FACTORS.filter((rf) => rf.axis === ax.key && !rf.override && f.riskFactors.includes(rf.key)).reduce((t, rf) => t + rf.points, 0), "Βαθμοί (Β)": assessedB.axes[ax.key] });
+    });
+    rows.push({ "Παράγοντας": "ΠΕΡΙΠΤΩΣΕΙΣ «ΥΠΕΡΙΣΧΥΕΙ»" });
+    AML_RISK_FACTORS.filter((rf) => rf.override).forEach((rf) => rows.push({ "Παράγοντας": rf.label, "Παράρτημα / διάταξη": rf.ref, "Βαθμοί (Α)": "ΥΠΕΡΙΣΧΥΕΙ", "Συντρέχει;": f.riskFactors.includes(rf.key) ? "ΝΑΙ" : "ΟΧΙ", "Τεκμηρίωση": f.riskFactorNotes?.[rf.key] || "" }));
+    exportToExcel(`AML_Φύλλο_Αξιολόγησης_${client.name.replace(/[^\w\u0370-\u03FF]+/g, "_")}_${toKey(TODAY)}.xlsx`, [
+      { name: "Στοιχεία", rows: [
+        { "Πεδίο": "Πελάτης", "Τιμή": client.name }, { "Πεδίο": "Α.Φ.Μ.", "Τιμή": client.afm || "" }, { "Πεδίο": "Νομική μορφή", "Τιμή": client.legalForm || "" },
+        { "Πεδίο": "Έκδοση φύλλου", "Τιμή": f.sheetVersion || 1 }, { "Πεδίο": "Τύπος αξιολόγησης", "Τιμή": AML_ASSESSMENT_TYPES[f.assessmentType || "initial"] }, { "Πεδίο": "Ημερομηνία αξιολόγησης", "Τιμή": f.assessmentDate || "" },
+      ] },
+      { name: "Αξιολόγηση", rows },
+      { name: "Αποτέλεσμα", rows: [
+        { "Μέγεθος": "Άθροισμα βαθμών — Μοντέλο Α", "Τιμή": assessed.score }, { "Μέγεθος": "Βαθμός 0-100 — Μοντέλο Β", "Τιμή": assessedB.score },
+        { "Μέγεθος": "Περιπτώσεις «ΥΠΕΡΙΣΧΥΕΙ»", "Τιμή": assessed.overrides.length }, { "Μέγεθος": "Παράγοντες Παραρτήματος Ι", "Τιμή": AML_RISK_FACTORS.filter((rf) => f.riskFactors.includes(rf.key) && rf.points < 0).length }, { "Μέγεθος": "Παράγοντες Παραρτήματος ΙΙ", "Τιμή": AML_RISK_FACTORS.filter((rf) => f.riskFactors.includes(rf.key) && rf.points > 0).length },
+        { "Μέγεθος": "Κατηγορία κινδύνου", "Τιμή": ({ low: "ΧΑΜΗΛΟΣ", medium: "ΜΕΤΡΙΟΣ", high: "ΥΨΗΛΟΣ" })[effectiveLevel] }, { "Μέγεθος": "Μέτρα δέουσας επιμέλειας", "Τιμή": AML_DD_LABELS[ddLevel] }, { "Μέγεθος": "Ελάχιστη συχνότητα επικαιροποίησης", "Τιμή": effectiveLevel === "low" ? "Ανά διετία" : "Ετησίως και σε κάθε μεταβολή" },
+        { "Μέγεθος": "Έλεγχος τεκμηρίου Παραρτήματος ΙΙ", "Τιμή": needsJustification ? "ΑΠΑΙΤΕΙΤΑΙ ΓΡΑΠΤΗ ΑΙΤΙΟΛΟΓΙΑ" : (f.riskOverrideReason || "—") },
+        { "Μέγεθος": "Έγκριση ανώτερου στελέχους", "Τιμή": f.approvedBy ? `${employees.find((e) => e.id === f.approvedBy)?.name || ""} ${f.approvedOn || ""}` : (effectiveLevel === "high" ? "ΕΚΚΡΕΜΕΙ" : "Δεν απαιτείται") },
+        { "Μέγεθος": "Επόμενη επανεξέταση", "Τιμή": f.nextReviewOn || "" }, { "Μέγεθος": "Υπεύθυνος συμμόρφωσης", "Τιμή": employees.find((e) => e.id === f.completedBy)?.name || "" },
+      ] },
+    ]);
+  }
 
   function openUbo(x) { setUboModal(x || "new"); setU(x ? { ...x } : { name: "", afm: "", idNumber: "", nationality: "Ελληνική", residenceCountry: "Ελλάδα", ownershipPct: "", controlType: "Ownership", isPep: false, verifiedOn: "", verificationDoc: "", note: "" }); }
   async function saveUbo() {
@@ -5890,6 +6319,9 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`Due diligence — ${client.name}`, buildDueDiligenceHtml({ client, aml: aml ? { ...aml, ...f } : f, ubos, documents, employees, tasks }))}>Download PDF</Btn>
+            <Btn variant="secondary" onClick={exportRiskSheet}>Φύλλο αξιολόγησης (Excel)</Btn>
+            {(f.status === "completed") && <Btn variant="secondary" onClick={() => startReview("annual")}>Ετήσια επανεξέταση</Btn>}
+            {(f.status === "completed") && <Btn variant="ghost" onClick={() => startReview("extraordinary")}>Έκτακτη επανεξέταση</Btn>}
             <Btn variant="secondary" onClick={() => save()} disabled={!dirty}>Save</Btn>
             {f.status !== "completed" && f.status !== "declined" && <Btn variant="ghost" onClick={decline}>Decline engagement</Btn>}
             {f.status !== "completed" && f.status !== "declined" ? <Btn icon={Check} onClick={complete}>Complete file</Btn> : <Btn variant="ghost" onClick={reopen}>Reopen</Btn>}
@@ -5979,7 +6411,12 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
           <div style={{ gridColumn: "1 / span 2" }}><Field label={`Source of wealth / origin of funds${ddLevel === "enhanced" ? " (required — enhanced due diligence)" : " (optional at this level)"}`}><textarea style={textareaStyle} value={f.sourceOfFunds} onChange={(e) => set({ sourceOfFunds: e.target.value })} /></Field></div>
         </div>
 
-        {section("6", "Risk scoring (Model A — four axes)", "Start from standard due diligence. Annex I factors subtract, Annex II add; ≤0 with an Annex I factor → low; +1 to +5 → medium; ≥+6 or any override case → high.")}
+        {section("6", "Risk scoring — Φύλλο αξιολόγησης κινδύνου (άρ. 13 παρ. 9)", "Four axes of άρ. 35 παρ. 1. Model A: Annex I subtracts, Annex II adds; ≤0 with an Annex I factor → low, +1..+5 → medium, ≥+6 or override → high. Model B (0–100) is computed alongside. Write the τεκμηρίωση for every factor you tick.")}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 8 }}>
+          <Field label="Τύπος αξιολόγησης"><select style={inputStyle} value={f.assessmentType || "initial"} onChange={(e) => set({ assessmentType: e.target.value })}>{Object.entries(AML_ASSESSMENT_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
+          <Field label="Ημερομηνία αξιολόγησης"><input type="date" style={inputStyle} value={f.assessmentDate || ""} onChange={(e) => set({ assessmentDate: e.target.value })} /></Field>
+          <Field label="Έκδοση φύλλου"><input style={{ ...inputStyle, background: C.bg }} value={f.sheetVersion || 1} readOnly /></Field>
+        </div>
         {AML_AXES.map((ax) => (
           <div key={ax.key} style={{ marginBottom: 10 }}>
             <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.inkMuted, margin: "8px 0 4px" }}>{ax.label}</div>
@@ -5987,28 +6424,38 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
               {AML_RISK_FACTORS.filter((rf) => rf.axis === ax.key).map((rf) => {
                 const on = f.riskFactors.includes(rf.key);
                 return (
-                  <label key={rf.key} style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink, padding: "4px 8px", borderRadius: 6, background: on ? (rf.override ? "#FDECEC" : C.accentSoft) : "transparent", cursor: "pointer" }}>
-                    <input type="checkbox" checked={on} onChange={() => toggleFactor(rf.key)} />
-                    <span style={{ flex: 1 }}>{rf.label}</span>
-                    <span style={{ fontFamily: mono, fontSize: 11, color: rf.override ? C.danger : rf.points < 0 ? C.accentDark : C.inkFaint, whiteSpace: "nowrap" }}>{rf.override ? "OVERRIDE" : (rf.points > 0 ? "+" : "") + rf.points} · {rf.ref}</span>
-                  </label>
+                  <div key={rf.key} style={{ padding: "4px 8px", borderRadius: 6, background: on ? (rf.override ? "#FDECEC" : C.accentSoft) : "transparent" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink, cursor: "pointer" }}>
+                      <input type="checkbox" checked={on} onChange={() => toggleFactor(rf.key)} />
+                      <span style={{ flex: 1 }}>{rf.label}</span>
+                      <span style={{ fontFamily: mono, fontSize: 11, color: rf.override ? C.danger : rf.points < 0 ? C.accentDark : C.inkFaint, whiteSpace: "nowrap" }}>{rf.override ? "ΥΠΕΡΙΣΧΥΕΙ" : `${rf.points > 0 ? "+" : ""}${rf.points} · B ${AML_MODEL_B_POINTS[rf.key] ?? 0}`} · {rf.ref}</span>
+                    </label>
+                    {on && <input style={{ ...inputStyle, marginTop: 4, padding: "4px 8px", fontSize: 12 }} value={f.riskFactorNotes?.[rf.key] || ""} onChange={(e) => setFactorNote(rf.key, e.target.value)} placeholder="Τεκμηρίωση — γιατί συντρέχει, με τα συγκεκριμένα στοιχεία" />}
+                  </div>
                 );
               })}
             </div>
           </div>
         ))}
         <div style={{ ...grid2, marginTop: 12 }}>
-          <div style={{ fontFamily: sans, fontSize: 13, color: C.ink, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            Sum <span style={{ fontFamily: mono, fontWeight: 700 }}>{assessed.score >= 0 ? "+" : ""}{assessed.score}</span>
-            {assessed.forced && <Badge tone="danger">Override: {assessed.overrides.map((o) => o.ref).join(", ")}</Badge>}
-            → <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_LEVEL_LABELS[effectiveLevel]} risk</Badge> <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_DD_LABELS[ddLevel]}</Badge>
+          <div style={{ fontFamily: sans, fontSize: 13, color: C.ink, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              Model A <span style={{ fontFamily: mono, fontWeight: 700 }}>{assessed.score >= 0 ? "+" : ""}{assessed.score}</span>
+              · Model B <span style={{ fontFamily: mono, fontWeight: 700 }}>{assessedB.score}/100</span> <span style={{ fontFamily: mono, fontSize: 11, color: C.inkFaint }}>({AML_AXES.map((ax) => `${ax.key} ${assessedB.axes[ax.key]}`).join(" · ")})</span>
+              {assessed.forced && <Badge tone="danger">Υπερισχύει: {assessed.overrides.map((o) => o.ref).join(", ")}</Badge>}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              → <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_LEVEL_LABELS[effectiveLevel]} risk</Badge> <Badge tone={AML_LEVEL_TONE[effectiveLevel]}>{AML_DD_LABELS[ddLevel]}</Badge>
+              {assessedB.level !== assessed.level && !assessed.forced && <span style={{ fontFamily: sans, fontSize: 11.5, color: C.warn }}>Model B would give {AML_LEVEL_LABELS[assessedB.level]} — the firm's policy applies one model consistently.</span>}
+              {needsJustification && <span style={{ fontFamily: sans, fontSize: 11.5, color: C.danger }}>Annex II factor present without high classification — written justification required below.</span>}
+            </div>
           </div>
-          <Field label="Documented deviation from the computed level (optional, reason required)">
+          <Field label={needsJustification ? "Γραπτή αιτιολογία (required): γιατί ο παράγοντας Παρ. ΙΙ δεν ανεβάζει τον κίνδυνο" : "Documented deviation from the computed level (optional, reason required)"}>
             <div style={{ display: "flex", gap: 8 }}>
               <select style={{ ...inputStyle, width: 130 }} value={f.riskOverride} onChange={(e) => set({ riskOverride: e.target.value })} disabled={assessed.forced}>
                 <option value="">Computed</option>{Object.entries(AML_LEVEL_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
-              <input style={inputStyle} value={f.riskOverrideReason} onChange={(e) => set({ riskOverrideReason: e.target.value })} placeholder="Why the factor does not raise the risk in this case" disabled={!f.riskOverride || assessed.forced} />
+              <input style={{ ...inputStyle, ...(needsJustification ? { border: `1px solid ${C.danger}` } : {}) }} value={f.riskOverrideReason} onChange={(e) => set({ riskOverrideReason: e.target.value })} placeholder="Why the factor does not raise the risk in this case" disabled={assessed.forced || (!f.riskOverride && !annexIIPresent)} />
             </div>
           </Field>
           {effectiveLevel === "high" && <>
@@ -6043,6 +6490,8 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
 
         {section("8", "Decision, file and next review", "Accepting opens the file and sets the review date; declining is recorded with its reason (άρ. 13 παρ. 2).")}
         <div style={grid2}>
+          <Field label="Μεταβολή πραγματικών δικαιούχων διαπιστώθηκε στις (ενεργοποιεί έκτακτη επανεξέταση & 60-ήμερη προθεσμία ΚΜΠΔ, άρ. 20)"><input type="date" style={inputStyle} value={f.uboChangeDate || ""} onChange={(e) => set({ uboChangeDate: e.target.value })} /></Field>
+          <Field label="Ο πελάτης καταχώρισε τη μεταβολή στο ΚΜΠΔ στις"><input type="date" style={inputStyle} value={f.uboFiledDate || ""} onChange={(e) => set({ uboFiledDate: e.target.value })} disabled={!f.uboChangeDate} /></Field>
           <Field label="Next periodic review"><input type="date" style={inputStyle} value={f.nextReviewOn} onChange={(e) => set({ nextReviewOn: e.target.value })} /></Field>
           <Field label="Status"><div style={{ paddingTop: 7 }}><Badge tone={AML_STATUS_TONE[f.status]}>{AML_STATUS_LABELS[f.status]}</Badge>{f.completedOn ? <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginLeft: 8 }}>{f.completedOn} · {empName(f.completedBy)}</span> : null}</div></Field>
           {f.status === "declined" && <div style={{ gridColumn: "1 / span 2", fontFamily: sans, fontSize: 12.5, color: C.danger }}>Declined: {f.decisionReason || "—"}</div>}
@@ -6402,6 +6851,353 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     </div>
   );
 }
+/* ---------------------------------------------------------------------- */
+/* AML Compliance page — the firm's compliance toolkit (ν. 4557/2018)       */
+/* ---------------------------------------------------------------------- */
+
+function CompliancePage({ user, clients, employees, amlRecords, cases, requests, amlFirm, saveAmlFirm, refetchCases, refetchRequests, onOpenCard }) {
+  const [tab, setTab] = useState("alerts");
+  const f = { ...DEFAULT_AML_FIRM, ...(amlFirm || {}) };
+  const setF = (patch) => saveAmlFirm({ ...f, ...patch });
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const clientName = (id) => clients.find((c) => c.id === id)?.name || "—";
+  const alerts = amlAlerts({ clients, amlRecords, cases, requests, amlFirm: f, employees });
+  const [caseModal, setCaseModal] = useState(null); const [cf, setCf] = useState({});
+  const [reqModal, setReqModal] = useState(null); const [rf, setRf] = useState({});
+
+  // Register (Βήμα 9) rows — one per client, from each client's sheet.
+  const registerRows = clients.filter((c) => c.lifecycle !== "lead").map((c) => ({ c, a: amlRecords.find((x) => x.clientId === c.id) || null })).sort((x, y) => x.c.name.localeCompare(y.c.name));
+  const counts = { low: 0, medium: 0, high: 0, none: 0 };
+  registerRows.forEach(({ a }) => { if (!a || a.status === "not_started") counts.none += 1; else counts[a.riskLevel] += 1; });
+
+  function exportRegister() {
+    exportToExcel(`AML_Συγκεντρωτική_Κατάσταση_Πελατών_v${f.registerVersion || "1.0"}_${toKey(TODAY)}.xlsx`, [
+      { name: "Κατάσταση πελατών", rows: registerRows.map(({ c, a }, i) => ({
+        "Α/Α": i + 1, "Πελάτης": c.name, "Α.Φ.Μ.": c.afm || "", "Νομική μορφή": c.legalForm || "", "Ημ. αξιολόγησης": a?.assessmentDate || a?.completedOn || "",
+        "Άθροισμα (Μοντέλο Α)": a ? a.riskScore : "", "Βαθμός (Μοντέλο Β)": a ? a.riskScoreB : "", "Υπερισχύει": a ? (amlAssess(a.riskFactors).forced ? "ΝΑΙ" : "ΟΧΙ") : "",
+        "Κατηγορία": a ? ({ low: "ΧΑΜΗΛΟΣ", medium: "ΜΕΤΡΙΟΣ", high: "ΥΨΗΛΟΣ" })[a.riskLevel] : "ΜΗ ΑΞΙΟΛΟΓΗΜΕΝΟΣ", "Μέτρα": a ? AML_DD_LABELS[a.ddLevel] : "",
+        "Επόμενη επανεξέταση": a?.nextReviewOn || "", "Έγκριση": a?.approvedBy ? `${empName(a.approvedBy)} ${a.approvedOn || ""}` : "", "Παρατηρήσεις": a ? [a.riskOverrideReason, a.notes].filter(Boolean).join(" · ") : "Χωρίς φάκελο",
+      })) },
+      { name: "Σύνολα", rows: [["ΧΑΜΗΛΟΣ", counts.low, "Απλουστευμένη δέουσα επιμέλεια"], ["ΜΕΤΡΙΟΣ", counts.medium, "Συνήθης δέουσα επιμέλεια"], ["ΥΨΗΛΟΣ", counts.high, "Αυξημένη δέουσα επιμέλεια"], ["ΜΗ ΑΞΙΟΛΟΓΗΜΕΝΟΙ", counts.none, "Εκκρεμεί φάκελος"], ["ΣΥΝΟΛΟ", registerRows.length, ""]].map(([k, n, m]) => ({ "Κατηγορία": k, "Πλήθος": n, "Μέτρα": m })) },
+      { name: "Εκδόσεις & έγκριση", rows: [{ "Έκδοση": f.registerVersion || "1.0", "Ημερομηνία": f.registerDate || toKey(TODAY), "Μεθοδολογία": f.methodologyModel === "B" ? "Μοντέλο Β (0-100)" : "Μοντέλο Α", "Εγκρίθηκε από": f.registerApprovedBy || "", "Υπεύθυνος συμμόρφωσης": empName(f.complianceOfficerId) }] },
+    ]);
+  }
+  function issueRegisterVersion() {
+    const cur = f.registerVersion || "1.0"; const [maj, min] = cur.split(".").map(Number);
+    const next = `${maj}.${(min || 0) + 1}`;
+    const v = window.prompt("Νέα έκδοση της συγκεντρωτικής κατάστασης", f.registerDate ? next : "1.0"); if (v === null) return;
+    const by = window.prompt("Εγκρίθηκε από (ανώτερο διοικητικό στέλεχος)", f.registerApprovedBy || empName(user.id)); if (by === null) return;
+    setF({ registerVersion: v, registerDate: toKey(TODAY), registerApprovedBy: by });
+  }
+  function printSelfAssessment() {
+    const rows = AML_AUDIT_QUESTIONS.map((q) => { const a = f.selfAssessment?.[q.n]; const ok = q.invert ? a === "no" : a === "yes"; return `<tr><td>${q.n}</td><td>${escapeHtml(q.q)}</td><td>${a === "yes" ? "ΝΑΙ" : a === "no" ? "ΟΧΙ" : a === "na" ? "Δεν συντρέχει" : "—"}</td><td>${ok || a === "na" ? "" : escapeHtml(q.fix)}</td></tr>`; }).join("");
+    printHtml("Αυτοδιάγνωση ν. 4557/2018", `<h1>Αυτοδιάγνωση — τα 23 ερωτήματα του ελέγχου ΑΑΔΕ</h1><p class="muted">${escapeHtml(DEFAULT_FIRM.name)} · ${new Date().toLocaleString("el-GR")} · Υπεύθυνος συμμόρφωσης: ${escapeHtml(empName(f.complianceOfficerId))}</p><table><tr><th>#</th><th>Ερώτημα</th><th>Απάντηση</th><th>Τι πρέπει να γίνει</th></tr>${rows}</table>`);
+  }
+  function printRoadmap() {
+    const rows = AML_STEPS.map((st) => { const d = f.steps?.[st.n] || {}; return `<tr><td>${st.n}</td><td>${escapeHtml(st.stage)}</td><td>${escapeHtml(st.title)}</td><td>${escapeHtml(st.out)}</td><td>${d.done ? "✔ " + (d.date || "") : "—"}</td><td>${escapeHtml(d.note || "")}</td></tr>`; }).join("");
+    const docs = AML_FILE_DOCUMENTS.map((d) => `<tr><td>${d.n}</td><td>${escapeHtml(d.title)}</td><td>Βήμα ${d.step}</td><td>${f.fileDocs?.[d.n] ? "✔" : "—"}</td></tr>`).join("");
+    printHtml("Πορεία συμμόρφωσης", `<h1>Η πορεία των 15 βημάτων</h1><p class="muted">${new Date().toLocaleString("el-GR")}</p><table><tr><th>#</th><th>Στάδιο</th><th>Βήμα</th><th>Παραδοτέο</th><th>Ολοκληρώθηκε</th><th>Σημείωση</th></tr>${rows}</table><h2>Ο φάκελος συμμόρφωσης — 14 έγγραφα</h2><table><tr><th>#</th><th>Έγγραφο</th><th>Παράγεται</th><th>Υπάρχει</th></tr>${docs}</table>`);
+  }
+  async function saveCase() {
+    if (!cf.description?.trim()) { window.alert("Περιγράψτε το περιστατικό."); return; }
+    const row = { client_id: cf.clientId || null, detected_on: cf.detectedOn || toKey(TODAY), description: cf.description.trim(), decision: cf.decision || "pending", decision_on: cf.decision && cf.decision !== "pending" ? (cf.decisionOn || toKey(TODAY)) : null, decided_by: cf.decision && cf.decision !== "pending" ? user.id : null, report_ref: cf.reportRef || null, rationale: cf.rationale || null };
+    const { error } = caseModal === "new" ? await supabase.from("aml_cases").insert({ ...row, detected_by: user.id }) : await supabase.from("aml_cases").update(row).eq("id", caseModal.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    await refetchCases(); setCaseModal(null);
+  }
+  async function saveRequest() {
+    if (!rf.subject?.trim()) { window.alert("Γράψτε το αντικείμενο του αιτήματος."); return; }
+    const row = { authority: rf.authority || AML_AUTHORITIES[0], received_on: rf.receivedOn || toKey(TODAY), due_on: rf.dueOn || null, subject: rf.subject.trim(), client_id: rf.clientId || null, status: rf.status || "open", answered_on: rf.status === "answered" ? (rf.answeredOn || toKey(TODAY)) : null, note: rf.note || null };
+    const { error } = reqModal === "new" ? await supabase.from("aml_authority_requests").insert(row) : await supabase.from("aml_authority_requests").update(row).eq("id", reqModal.id);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    await refetchRequests(); setReqModal(null);
+  }
+
+  const tabs = [
+    { key: "alerts", label: `Alerts (${alerts.length})` },
+    { key: "register", label: "Κατάσταση πελατών" },
+    { key: "cases", label: `Ύποπτες συναλλαγές (${cases.filter((k) => k.decision === "pending").length} open)` },
+    { key: "requests", label: `Αιτήματα αρχών (${requests.filter((r) => r.status === "open").length} open)` },
+    { key: "firm", label: "Στοιχεία γραφείου" },
+    { key: "self", label: "Αυτοδιάγνωση (23)" },
+    { key: "steps", label: "Τα 15 βήματα" },
+  ];
+  const sevTone = (s) => s === "high" ? "danger" : "warn";
+  const answered = AML_AUDIT_QUESTIONS.filter((q) => f.selfAssessment?.[q.n]).length;
+  const okCount = AML_AUDIT_QUESTIONS.filter((q) => { const a = f.selfAssessment?.[q.n]; return a === "na" || (q.invert ? a === "no" : a === "yes"); }).length;
+  const stepsDone = AML_STEPS.filter((st) => f.steps?.[st.n]?.done).length;
+
+  return (
+    <div>
+      <PageHeader title="AML Compliance" sub="Η εργαλειοθήκη συμμόρφωσης του γραφείου κατά τον ν. 4557/2018 — alerts, συγκεντρωτική κατάσταση, ύποπτες συναλλαγές, αιτήματα αρχών, αυτοδιάγνωση και πορεία των 15 βημάτων." />
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatCard label="Urgent alerts" value={String(alerts.filter((a) => a.severity === "high").length)} accent={alerts.some((a) => a.severity === "high") ? C.danger : C.accent} sub="Need action now" />
+        <StatCard label="Upcoming" value={String(alerts.filter((a) => a.severity !== "high").length)} accent={C.warn} sub="Within the next weeks" />
+        <StatCard label="Clients classified" value={`${counts.low + counts.medium + counts.high}/${registerRows.length}`} sub={`${counts.low} low · ${counts.medium} medium · ${counts.high} high`} accent={counts.none ? C.warn : C.accent} />
+        <StatCard label="Self-assessment" value={`${okCount}/23`} sub={`${answered} answered`} accent={okCount === 23 ? C.accent : C.warn} />
+        <StatCard label="Roadmap" value={`${stepsDone}/15`} sub="Steps completed" accent={stepsDone === 15 ? C.accent : undefined} />
+      </div>
+      <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${C.border}`, marginBottom: 16, flexWrap: "wrap" }}>
+        {tabs.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{ background: "none", border: "none", cursor: "pointer", padding: "8px 12px", fontFamily: sans, fontSize: 13, fontWeight: tab === t.key ? 700 : 500, color: tab === t.key ? C.accentDark : C.inkMuted, borderBottom: tab === t.key ? `2px solid ${C.accent}` : "2px solid transparent", marginBottom: -1 }}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === "alerts" && (
+        <Panel>
+          <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, marginBottom: 10 }}>Κάθε υποχρέωση αναφοράς, επανεξέτασης ή καταχώρισης που εκκρεμεί — προς την Αρχή, την ΑΑΔΕ, το ΚΜΠΔ και εσωτερικά. Ενημερώνεται αυτόματα από τους φακέλους των πελατών και τα στοιχεία του γραφείου.</div>
+          {alerts.length === 0 ? <EmptyState icon={Check} title="Καμία εκκρεμότητα" sub="Όλες οι υποχρεώσεις είναι ενήμερες." /> : (
+            <TableShell headers={["Προτεραιότητα", "Υποχρέωση", "Λεπτομέρεια", "Προθεσμία", ""]}>
+              {alerts.map((a, i) => (
+                <tr key={i}>
+                  <Td><Badge tone={sevTone(a.severity)}>{a.severity === "high" ? "Urgent" : "Upcoming"}</Badge></Td>
+                  <Td style={{ fontWeight: 600 }}>{a.title}</Td>
+                  <Td style={{ color: C.inkMuted, fontSize: 12.5 }}>{a.detail}</Td>
+                  <Td mono style={{ color: a.due && daysUntil(a.due) < 0 ? C.danger : C.inkMuted }}>{a.due || "—"}</Td>
+                  <Td right>{a.clientId ? <Btn size="sm" variant="ghost" onClick={() => onOpenCard(a.clientId, "dd")}>Open file</Btn> : a.kind === "firm" || a.kind === "register" ? <Btn size="sm" variant="ghost" onClick={() => setTab(a.kind === "register" ? "register" : "firm")}>Open</Btn> : a.kind === "case" ? <Btn size="sm" variant="ghost" onClick={() => setTab("cases")}>Open</Btn> : a.kind === "request" ? <Btn size="sm" variant="ghost" onClick={() => setTab("requests")}>Open</Btn> : null}</Td>
+                </tr>
+              ))}
+            </TableShell>
+          )}
+        </Panel>
+      )}
+
+      {tab === "register" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Συγκεντρωτική κατάσταση κατάταξης πελατών — άρ. 35 παρ. 2, άρ. 13 παρ. 9</div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Έκδοση {f.registerVersion || "—"}{f.registerDate ? ` της ${f.registerDate}` : " (δεν έχει εκδοθεί)"}{f.registerApprovedBy ? ` · εγκρίθηκε από ${f.registerApprovedBy}` : ""} · Μεθοδολογία: {f.methodologyModel === "B" ? "Μοντέλο Β (0-100)" : "Μοντέλο Α (αφαιρετικό/προσθετικό)"}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn size="sm" variant="secondary" onClick={issueRegisterVersion}>Έκδοση νέας έκδοσης</Btn>
+              <Btn size="sm" onClick={exportRegister}>Εξαγωγή Excel</Btn>
+            </div>
+          </div>
+          <TableShell headers={["Πελάτης", "Νομική μορφή", "Ημ. αξιολόγησης", "Μοντέλο Α", "Μοντέλο Β", "Υπερισχύει", "Κατηγορία", "Μέτρα", "Επανεξέταση", ""]}>
+            {registerRows.map(({ c, a }) => (
+              <tr key={c.id}>
+                <Td style={{ fontWeight: 600 }}>{c.name}</Td>
+                <Td style={{ color: C.inkMuted }}>{c.legalForm || "—"}</Td>
+                <Td mono>{a?.assessmentDate || a?.completedOn || "—"}</Td>
+                <Td mono>{a ? `${a.riskScore >= 0 ? "+" : ""}${a.riskScore}` : "—"}</Td>
+                <Td mono>{a ? a.riskScoreB : "—"}</Td>
+                <Td>{a && amlAssess(a.riskFactors).forced ? <Badge tone="danger">ΝΑΙ</Badge> : <span style={{ color: C.inkFaint }}>—</span>}</Td>
+                <Td>{a && a.status !== "not_started" ? <Badge tone={AML_LEVEL_TONE[a.riskLevel]}>{AML_LEVEL_LABELS[a.riskLevel]}</Badge> : <Badge tone="danger">Μη αξιολογημένος</Badge>}</Td>
+                <Td style={{ fontSize: 12, color: C.inkMuted }}>{a ? AML_DD_LABELS[a.ddLevel] : "—"}</Td>
+                <Td mono style={{ color: a?.nextReviewOn && daysUntil(a.nextReviewOn) < 0 ? C.danger : C.inkMuted }}>{a?.nextReviewOn || "—"}</Td>
+                <Td right><Btn size="sm" variant="ghost" onClick={() => onOpenCard(c.id, "dd")}>Φύλλο</Btn></Td>
+              </tr>
+            ))}
+            <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
+              <Td>Σύνολο {registerRows.length}</Td><Td /><Td /><Td /><Td /><Td />
+              <Td style={{ fontSize: 12 }}>{counts.low} χαμηλός · {counts.medium} μέτριος · {counts.high} υψηλός · {counts.none} εκκρεμείς</Td><Td /><Td /><Td />
+            </tr>
+          </TableShell>
+        </Panel>
+      )}
+
+      {tab === "cases" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 700 }}>Αρχείο περιστατικών (Βήμα 15): κάθε συναλλαγή που εξετάστηκε ως ασυνήθης ή ύποπτη — είτε αναφέρθηκε στην Αρχή (άρ. 22) είτε όχι (άρ. 30 παρ. 1γ). Η αναφορά γίνεται «αμελλητί» από τον υπεύθυνο συμμόρφωσης. <strong>Απαγορεύεται η γνωστοποίηση στον πελάτη (άρ. 27).</strong></div>
+            <Btn size="sm" icon={Plus} onClick={() => { setCaseModal("new"); setCf({ detectedOn: toKey(TODAY), decision: "pending", clientId: "" }); }}>Νέο περιστατικό</Btn>
+          </div>
+          {cases.length === 0 ? <EmptyState icon={AlertTriangle} title="Κανένα περιστατικό" /> : (
+            <TableShell headers={["Εντοπίστηκε", "Πελάτης", "Περιγραφή", "Απόφαση", "Ημ. απόφασης", "Αρ. αναφοράς", ""]}>
+              {[...cases].sort((a, b) => b.detectedOn.localeCompare(a.detectedOn)).map((k) => (
+                <tr key={k.id}>
+                  <Td mono>{k.detectedOn}</Td>
+                  <Td>{k.clientId ? clientName(k.clientId) : "—"}</Td>
+                  <Td style={{ maxWidth: 360 }}>{k.description}</Td>
+                  <Td><Badge tone={AML_CASE_TONE[k.decision]}>{AML_CASE_DECISIONS[k.decision]}</Badge></Td>
+                  <Td mono style={{ color: C.inkMuted }}>{k.decisionOn || "—"}</Td>
+                  <Td mono style={{ color: C.inkMuted }}>{k.reportRef || "—"}</Td>
+                  <Td right><Btn size="sm" variant="ghost" icon={Pencil} onClick={() => { setCaseModal(k); setCf({ ...k }); }}>Edit</Btn></Td>
+                </tr>
+              ))}
+            </TableShell>
+          )}
+        </Panel>
+      )}
+
+      {tab === "requests" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 700 }}>Αιτήματα πληροφοριών από την ΑΑΔΕ, την Αρχή ή άλλη δημόσια αρχή — απάντηση «αμελλητί» (άρ. 22 παρ. 1β). Καταγράψτε κάθε αίτημα με την προθεσμία του ώστε να εμφανίζεται στα alerts.</div>
+            <Btn size="sm" icon={Plus} onClick={() => { setReqModal("new"); setRf({ authority: AML_AUTHORITIES[0], receivedOn: toKey(TODAY), status: "open", clientId: "" }); }}>Νέο αίτημα</Btn>
+          </div>
+          {requests.length === 0 ? <EmptyState icon={Mail} title="Κανένα αίτημα" /> : (
+            <TableShell headers={["Παραλαβή", "Αρχή", "Αντικείμενο", "Πελάτης", "Προθεσμία", "Κατάσταση", ""]}>
+              {[...requests].sort((a, b) => b.receivedOn.localeCompare(a.receivedOn)).map((r) => (
+                <tr key={r.id}>
+                  <Td mono>{r.receivedOn}</Td>
+                  <Td>{r.authority}</Td>
+                  <Td style={{ maxWidth: 320 }}>{r.subject}</Td>
+                  <Td>{r.clientId ? clientName(r.clientId) : "—"}</Td>
+                  <Td mono style={{ color: r.status === "open" && r.dueOn && daysUntil(r.dueOn) < 0 ? C.danger : C.inkMuted }}>{r.dueOn || "—"}</Td>
+                  <Td>{r.status === "open" ? <Badge tone="warn">Ανοιχτό</Badge> : <Badge tone="accent">Απαντήθηκε {r.answeredOn}</Badge>}</Td>
+                  <Td right><Btn size="sm" variant="ghost" icon={Pencil} onClick={() => { setReqModal(r); setRf({ ...r }); }}>Edit</Btn></Td>
+                </tr>
+              ))}
+            </TableShell>
+          )}
+        </Panel>
+      )}
+
+      {tab === "firm" && (
+        <Panel>
+          <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, marginBottom: 12 }}>Οι υποχρεώσεις του ίδιου του γραφείου (Βήματα 1, 2, 10-12). Οι ημερομηνίες τροφοδοτούν τα alerts: ΚΜΠΔ (άρ. 20), Πίνακας Ι΄ Ε3 ανά έτος, ετήσια επανεξέταση εγχειριδίου, ετήσια εκπαίδευση (άρ. 37), ετήσιος εσωτερικός έλεγχος (άρ. 35 παρ. 3).</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <Field label="Υπεύθυνος συμμόρφωσης (άρ. 35 παρ. 3α)">
+              <select style={inputStyle} value={f.complianceOfficerId} onChange={(e) => setF({ complianceOfficerId: e.target.value })}>
+                <option value="">— δεν έχει οριστεί —</option>{employees.filter((e) => e.role === "admin").map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Ημερομηνία πράξης ορισμού"><input type="date" style={inputStyle} value={f.appointmentDate} onChange={(e) => setF({ appointmentDate: e.target.value })} /></Field>
+            <Field label="Μεθοδολογία βαθμολόγησης (γράφεται μία φορά στην πολιτική)">
+              <select style={inputStyle} value={f.methodologyModel} onChange={(e) => setF({ methodologyModel: e.target.value })}><option value="A">Μοντέλο Α — αφαιρετικό/προσθετικό</option><option value="B">Μοντέλο Β — κλίμακα 0-100</option></select>
+            </Field>
+            <Field label="Καταχώριση γραφείου στο ΚΜΠΔ (άρ. 20)"><input type="date" style={inputStyle} value={f.kmpdRegisteredOn} onChange={(e) => setF({ kmpdRegisteredOn: e.target.value })} /></Field>
+            <Field label="Τελευταία μεταβολή δικαιούχων γραφείου"><input type="date" style={inputStyle} value={f.kmpdLastChangeOn} onChange={(e) => setF({ kmpdLastChangeOn: e.target.value })} /></Field>
+            <Field label="…καταχωρίστηκε στο ΚΜΠΔ στις (60 ημέρες)"><input type="date" style={inputStyle} value={f.kmpdLastFiledOn} onChange={(e) => setF({ kmpdLastFiledOn: e.target.value })} /></Field>
+            <Field label="Έκδοση εγχειριδίου πολιτικών"><input style={inputStyle} value={f.manualVersion} onChange={(e) => setF({ manualVersion: e.target.value })} placeholder="1.0" /></Field>
+            <Field label="Εγκρίθηκε στις"><input type="date" style={inputStyle} value={f.manualApprovedOn} onChange={(e) => setF({ manualApprovedOn: e.target.value, manualNextReviewOn: f.manualNextReviewOn || (e.target.value ? toKey(addMonths(fromKey(e.target.value), 12)) : "") })} /></Field>
+            <Field label="Επόμενη επανεξέταση εγχειριδίου"><input type="date" style={inputStyle} value={f.manualNextReviewOn} onChange={(e) => setF({ manualNextReviewOn: e.target.value })} /></Field>
+            <Field label="Τελευταία εκπαίδευση προσωπικού (άρ. 37)"><input type="date" style={inputStyle} value={f.lastTrainingOn} onChange={(e) => setF({ lastTrainingOn: e.target.value })} /></Field>
+            <Field label="Τελευταίο πόρισμα εσωτερικού ελέγχου"><input type="date" style={inputStyle} value={f.lastInternalAuditOn} onChange={(e) => setF({ lastInternalAuditOn: e.target.value })} /></Field>
+            <div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 6 }}>Πίνακας Ι΄ Ε3 — συμπληρωμένος για φορολογικό έτος</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[TODAY.getFullYear() - 3, TODAY.getFullYear() - 2, TODAY.getFullYear() - 1, TODAY.getFullYear()].map((y) => {
+                  const on = (f.e3PanelIYears || []).includes(y);
+                  return <label key={y} style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: mono, fontSize: 12.5, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 8px", background: on ? C.accentSoft : C.surface, cursor: "pointer" }}><input type="checkbox" checked={on} onChange={(e) => setF({ e3PanelIYears: e.target.checked ? [...(f.e3PanelIYears || []), y] : (f.e3PanelIYears || []).filter((x) => x !== y) })} />{y}</label>;
+                })}
+              </div>
+            </div>
+          </div>
+          <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 10 }}>Οι αλλαγές αποθηκεύονται αυτόματα.</div>
+        </Panel>
+      )}
+
+      {tab === "self" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 720 }}>Τα 23 ερωτήματα που στέλνει η ΑΑΔΕ στον ελεγχόμενο. Για κάθε ΟΧΙ βλέπετε τι πρέπει να γίνει και σε ποιο βήμα. {okCount}/23 εντάξει.</div>
+            <Btn size="sm" variant="secondary" icon={Receipt} onClick={printSelfAssessment}>Εκτύπωση / PDF</Btn>
+          </div>
+          {[...new Set(AML_AUDIT_QUESTIONS.map((q) => q.group))].map((g) => (
+            <div key={g} style={{ marginBottom: 14 }}>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, color: C.ink, margin: "8px 0" }}>{g}</div>
+              {AML_AUDIT_QUESTIONS.filter((q) => q.group === g).map((q) => {
+                const a = f.selfAssessment?.[q.n];
+                const ok = a === "na" || (q.invert ? a === "no" : a === "yes");
+                const bad = a && !ok;
+                return (
+                  <div key={q.n} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 8px", borderRadius: 6, background: bad ? "#FDECEC" : ok ? C.accentSoft : "transparent", marginBottom: 4 }}>
+                    <span style={{ fontFamily: mono, fontSize: 12, color: C.inkMuted, minWidth: 22 }}>{q.n}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: sans, fontSize: 12.5, color: C.ink }}>{q.q}</div>
+                      {bad && <div style={{ fontFamily: sans, fontSize: 12, color: C.danger, marginTop: 2 }}>→ {q.fix}</div>}
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[["yes", "ΝΑΙ"], ["no", "ΟΧΙ"], ...(q.na ? [["na", "Δεν συντρέχει"]] : [])].map(([v, l]) => (
+                        <button key={v} onClick={() => setF({ selfAssessment: { ...(f.selfAssessment || {}), [q.n]: v } })} style={{ padding: "4px 9px", fontSize: 11.5, fontFamily: sans, fontWeight: 600, border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", background: a === v ? C.accent : C.surface, color: a === v ? "#fff" : C.inkMuted }}>{l}</button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </Panel>
+      )}
+
+      {tab === "steps" && (
+        <Panel>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, maxWidth: 720 }}>Η σειρά εναρμόνισης σε πέντε στάδια. Τσεκάρετε κάθε βήμα και, στο τέλος, τα 14 έγγραφα του φακέλου συμμόρφωσης. Ετήσιος κύκλος: κάθε επανεξέταση πελάτη τροφοδοτεί νέα βαθμολόγηση (Βήμα 8) και νέα έκδοση της κατάστασης (Βήμα 9).</div>
+            <Btn size="sm" variant="secondary" icon={Receipt} onClick={printRoadmap}>Εκτύπωση / PDF</Btn>
+          </div>
+          {[...new Set(AML_STEPS.map((s) => s.stage))].map((stage, si) => (
+            <div key={stage} style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, color: C.ink, margin: "8px 0" }}>Στάδιο {si + 1} — {stage}</div>
+              {AML_STEPS.filter((s) => s.stage === stage).map((st) => {
+                const d = f.steps?.[st.n] || {};
+                return (
+                  <div key={st.n} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 8px", borderRadius: 6, background: d.done ? C.accentSoft : "transparent", marginBottom: 3, flexWrap: "wrap" }}>
+                    <input type="checkbox" checked={!!d.done} onChange={(e) => setF({ steps: { ...(f.steps || {}), [st.n]: { ...d, done: e.target.checked, date: e.target.checked ? (d.date || toKey(TODAY)) : "" } } })} />
+                    <span style={{ fontFamily: mono, fontSize: 12, color: C.inkMuted, minWidth: 22 }}>{st.n}</span>
+                    <div style={{ flex: 1, minWidth: 260 }}>
+                      <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 600, color: C.ink }}>{st.title} {st.q.length ? <span style={{ fontWeight: 400, color: C.inkFaint }}>· ερ. {st.q.join(", ")}</span> : null}</div>
+                      <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>{st.out}</div>
+                    </div>
+                    <input type="date" style={{ ...inputStyle, width: 140, padding: "4px 6px", fontSize: 12 }} value={d.date || ""} onChange={(e) => setF({ steps: { ...(f.steps || {}), [st.n]: { ...d, date: e.target.value } } })} disabled={!d.done} />
+                    <input style={{ ...inputStyle, width: 220, padding: "4px 6px", fontSize: 12 }} value={d.note || ""} onChange={(e) => setF({ steps: { ...(f.steps || {}), [st.n]: { ...d, note: e.target.value } } })} placeholder="Σημείωση / πού βρίσκεται" />
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, color: C.ink, margin: "16px 0 8px", paddingTop: 12, borderTop: `1px solid ${C.border}` }}>Ο φάκελος συμμόρφωσης — 14 έγγραφα ({Object.values(f.fileDocs || {}).filter(Boolean).length}/14)</div>
+          {AML_FILE_DOCUMENTS.map((d) => (
+            <label key={d.n} style={{ display: "flex", gap: 10, alignItems: "center", padding: "5px 8px", borderRadius: 6, background: f.fileDocs?.[d.n] ? C.accentSoft : "transparent", marginBottom: 3, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!f.fileDocs?.[d.n]} onChange={(e) => setF({ fileDocs: { ...(f.fileDocs || {}), [d.n]: e.target.checked } })} />
+              <span style={{ fontFamily: mono, fontSize: 12, color: C.inkMuted, minWidth: 22 }}>{d.n}</span>
+              <span style={{ flex: 1, fontFamily: sans, fontSize: 12.5, color: C.ink }}>{d.title}</span>
+              <span style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint }}>Βήμα {d.step}</span>
+            </label>
+          ))}
+        </Panel>
+      )}
+
+      {caseModal && (
+        <Modal title={caseModal === "new" ? "Νέο περιστατικό" : "Περιστατικό"} onClose={() => setCaseModal(null)} width={520}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.danger, background: "#FDECEC", borderRadius: 7, padding: "8px 10px" }}>Απαγόρευση γνωστοποίησης (άρ. 27): ο πελάτης και τρίτοι δεν ενημερώνονται ότι εξετάζεται ή υποβάλλεται αναφορά.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Πελάτης"><select style={inputStyle} value={cf.clientId || ""} onChange={(e) => setCf({ ...cf, clientId: e.target.value })}><option value="">— χωρίς / άγνωστος —</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+              <Field label="Εντοπίστηκε στις"><input type="date" style={inputStyle} value={cf.detectedOn || ""} onChange={(e) => setCf({ ...cf, detectedOn: e.target.value })} /></Field>
+            </div>
+            <Field label="Περιγραφή — ιστορικό και σκοπός της συναλλαγής (άρ. 16 παρ. 3)"><textarea style={{ ...textareaStyle, minHeight: 90 }} value={cf.description || ""} onChange={(e) => setCf({ ...cf, description: e.target.value })} /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Απόφαση υπευθύνου συμμόρφωσης"><select style={inputStyle} value={cf.decision || "pending"} onChange={(e) => setCf({ ...cf, decision: e.target.value })}>{Object.entries(AML_CASE_DECISIONS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
+              <Field label="Ημερομηνία απόφασης"><input type="date" style={inputStyle} value={cf.decisionOn || ""} onChange={(e) => setCf({ ...cf, decisionOn: e.target.value })} disabled={!cf.decision || cf.decision === "pending"} /></Field>
+              <Field label="Αρ. πρωτοκόλλου αναφοράς (αν αναφέρθηκε)"><input style={inputStyle} value={cf.reportRef || ""} onChange={(e) => setCf({ ...cf, reportRef: e.target.value })} disabled={cf.decision !== "reported"} /></Field>
+            </div>
+            <Field label="Αιτιολογία της απόφασης — τηρείται και όταν δεν γίνεται αναφορά (άρ. 30 παρ. 1γ)"><textarea style={textareaStyle} value={cf.rationale || ""} onChange={(e) => setCf({ ...cf, rationale: e.target.value })} /></Field>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div>{caseModal !== "new" && <Btn variant="ghost" size="sm" icon={Trash2} onClick={async () => { if (!window.confirm("Διαγραφή περιστατικού;")) return; await supabase.from("aml_cases").delete().eq("id", caseModal.id); await refetchCases(); setCaseModal(null); }}>Διαγραφή</Btn>}</div>
+              <div style={{ display: "flex", gap: 8 }}><Btn variant="secondary" onClick={() => setCaseModal(null)}>Άκυρο</Btn><Btn onClick={saveCase}>Αποθήκευση</Btn></div>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {reqModal && (
+        <Modal title={reqModal === "new" ? "Νέο αίτημα αρχής" : "Αίτημα αρχής"} onClose={() => setReqModal(null)} width={500}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Αρχή"><select style={inputStyle} value={rf.authority || AML_AUTHORITIES[0]} onChange={(e) => setRf({ ...rf, authority: e.target.value })}>{AML_AUTHORITIES.map((a) => <option key={a}>{a}</option>)}</select></Field>
+              <Field label="Πελάτης (αν αφορά)"><select style={inputStyle} value={rf.clientId || ""} onChange={(e) => setRf({ ...rf, clientId: e.target.value })}><option value="">—</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+              <Field label="Παραλήφθηκε"><input type="date" style={inputStyle} value={rf.receivedOn || ""} onChange={(e) => setRf({ ...rf, receivedOn: e.target.value })} /></Field>
+              <Field label="Προθεσμία απάντησης"><input type="date" style={inputStyle} value={rf.dueOn || ""} onChange={(e) => setRf({ ...rf, dueOn: e.target.value })} /></Field>
+            </div>
+            <Field label="Αντικείμενο"><input style={inputStyle} value={rf.subject || ""} onChange={(e) => setRf({ ...rf, subject: e.target.value })} placeholder="π.χ. Ερωτηματολόγιο 23 σημείων, αίτημα αρχείου πελατών από … έως …" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Κατάσταση"><select style={inputStyle} value={rf.status || "open"} onChange={(e) => setRf({ ...rf, status: e.target.value })}><option value="open">Ανοιχτό</option><option value="answered">Απαντήθηκε</option></select></Field>
+              <Field label="Απαντήθηκε στις"><input type="date" style={inputStyle} value={rf.answeredOn || ""} onChange={(e) => setRf({ ...rf, answeredOn: e.target.value })} disabled={rf.status !== "answered"} /></Field>
+            </div>
+            <Field label="Σημείωση / τι στάλθηκε"><textarea style={textareaStyle} value={rf.note || ""} onChange={(e) => setRf({ ...rf, note: e.target.value })} /></Field>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div>{reqModal !== "new" && <Btn variant="ghost" size="sm" icon={Trash2} onClick={async () => { if (!window.confirm("Διαγραφή αιτήματος;")) return; await supabase.from("aml_authority_requests").delete().eq("id", reqModal.id); await refetchRequests(); setReqModal(null); }}>Διαγραφή</Btn>}</div>
+              <div style={{ display: "flex", gap: 8 }}><Btn variant="secondary" onClick={() => setReqModal(null)}>Άκυρο</Btn><Btn onClick={saveRequest}>Αποθήκευση</Btn></div>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------------- */
 /* Root                                                                     */
@@ -6442,6 +7238,9 @@ export default function App() {
   const [ubos, refetchUbos, ubosLoading] = useTable("client_beneficial_owners", mapUbo, "name");
   const [documents, refetchDocuments, documentsLoading] = useTable("client_documents", mapDocument);
   const [firm, saveFirm] = useAppSetting("firm", DEFAULT_FIRM);
+  const [amlFirm, saveAmlFirm] = useAppSetting("aml_firm", DEFAULT_AML_FIRM);
+  const [amlCases, refetchAmlCases, amlCasesLoading] = useTable("aml_cases", mapAmlCase);
+  const [authorityRequests, refetchAuthorityRequests, requestsLoading] = useTable("aml_authority_requests", mapAuthorityRequest);
   const refetchDueDiligence = useCallback(async () => { await Promise.all([refetchAml(), refetchUbos()]); }, [refetchAml, refetchUbos]);
   const [cardClientId, setCardClientId] = useState(null);
   const [cardTab, setCardTab] = useState("details");
@@ -6505,7 +7304,7 @@ export default function App() {
   if (!session) return <AuthScreen />;
   if (profilesLoading || !user) return <LoadingScreen text="Setting up your account…" />;
   if (!user.active) return <LoadingScreen text="This account has been deactivated. Contact your manager." />;
-  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || billingLoading || contactsLoading || notesLoading || tasksLoading || templatesLoading || amlLoading || ubosLoading || documentsLoading || view === null) return <LoadingScreen />;
+  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || billingLoading || contactsLoading || notesLoading || tasksLoading || templatesLoading || amlLoading || ubosLoading || documentsLoading || amlCasesLoading || requestsLoading || view === null) return <LoadingScreen />;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: C.bg, fontFamily: sans }}>
@@ -6525,7 +7324,9 @@ export default function App() {
           <TeamCalendar employees={employees} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "dashboard" && (
-          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates} />
+          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates}
+            complianceAlerts={amlAlerts({ clients, amlRecords, cases: amlCases, requests: authorityRequests, amlFirm, employees })} onOpenCompliance={() => setView("compliance")}
+            billingStatuses={billingStatuses} onOpenBilling={() => setView("billing")} amlRecords={amlRecords} />
         )}
         {user.role === "admin" && view === "timesheets" && (
           <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} />
@@ -6553,6 +7354,10 @@ export default function App() {
         )}
         {user.role === "admin" && view === "reports" && (
           <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
+        )}
+        {user.role === "admin" && view === "compliance" && (
+          <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
+            amlFirm={amlFirm} saveAmlFirm={saveAmlFirm} refetchCases={refetchAmlCases} refetchRequests={refetchAuthorityRequests} onOpenCard={openClientCard} />
         )}
         {user.role === "admin" && view === "billing" && (
           <AdminBilling clients={clients} billingStatuses={billingStatuses} refetchBilling={refetchBilling} />
