@@ -5861,7 +5861,10 @@ const DOCUMENT_CATEGORIES = [
 const documentCategoryLabel = (k) => DOCUMENT_CATEGORIES.find((c) => c.key === k)?.label || k;
 
 async function uploadClientDocument(client, file, category, note, user) {
-  const safe = file.name.replace(/[^\w.\-()\u0370-\u03FF\u1F00-\u1FFF ]+/g, "_");
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot > 0 ? file.name.slice(dot).replace(/[^A-Za-z0-9.]/g, "").slice(0, 10) : "";
+  const base = (dot > 0 ? file.name.slice(0, dot) : file.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "file";
+  const safe = base + ext;
   const path = `${client.id}/${Date.now()}_${safe}`;
   const { error } = await supabase.storage.from(DOCUMENT_BUCKET).upload(path, file, { upsert: false, contentType: file.type || undefined });
   if (error) { window.alert(`Upload failed: ${error.message}\n\nIf this says the bucket does not exist or access is denied, run the latest schema.sql in Supabase (it creates the "client-documents" bucket and its policies).`); return false; }
