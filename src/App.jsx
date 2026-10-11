@@ -1095,7 +1095,7 @@ function Sidebar({ user, view, setView }) {
 // a short page comes back. Rows are ordered by a stable key so pages don't
 // overlap or skip.
 const PAGE_SIZE = 1000;
-const STABLE_ORDER = { locked_weeks: ["employee_id", "week_start"], app_settings: ["key"] };
+const STABLE_ORDER = { locked_weeks: ["employee_id", "week_start"], app_settings: ["key"], client_aml: ["client_id"] };
 function useTable(table, mapRow, orderColumn) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
