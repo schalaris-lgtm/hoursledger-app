@@ -6203,7 +6203,44 @@ function UploadButton({ label = "Upload", size = "sm", onFile }) {
   );
 }
 
-function ClientDocumentsTab({ user, client, documents, employees, refetchDocuments }) {
+// Εξουσιοδότηση προς λογιστή-φοροτεχνικό για ΑΑΔΕ / myDATA — pre-filled from the client card; signed by the client's representative.
+function buildAuthorisationHtml({ client, aml, firm = DEFAULT_FIRM, contacts = [] }) {
+  const e = escapeHtml;
+  const a = aml || {};
+  const natural = (a.entityType || amlEntityTypeFor(client.legalForm)) === "natural";
+  const b = (x, ph) => (x ? `<strong>${e(x)}</strong>` : `<span style="color:#999">${ph}</span>`);
+  const primary = contacts.find((c) => c.isPrimary) || contacts[0] || {};
+  const repName = a.representativeName || client.representativeName || (natural ? client.name : "");
+  const repId = a.representativeIdNumber || client.representativeIdNumber || "";
+  const repAfm = a.representativeAfm || client.representativeAfm || (natural ? client.afm : "");
+  const email = client.representativeEmail || primary.email || client.email || "";
+  const phone = client.representativePhone || primary.phone || client.phone || "";
+  const who = natural ? "τον/την" : "τον/την";
+  const services = [
+    "Να αποκτήσουν και να διατηρούν πρόσβαση στις ηλεκτρονικές υπηρεσίες της Ανεξάρτητης Αρχής Δημοσίων Εσόδων (myAADE / TAXISnet), τόσο με χρήση των κωδικών πρόσβασης " + (natural ? "μου" : "της εταιρείας") + " όσο και μέσω της διαδικασίας ορισμού λογιστή – εκπροσώπου και της υποβολής των σχετικών εξουσιοδοτήσεων χρηστών.",
+    "Να συντάσσουν, να υπογράφουν και να υποβάλλουν ηλεκτρονικά κάθε είδους φορολογική δήλωση και κατάσταση " + (natural ? "μου" : "της εταιρείας") + ", ενδεικτικά: δηλώσεις Φ.Π.Α., δηλώσεις παρακρατούμενων και προκαταβλητέων φόρων, δήλωση φορολογίας εισοδήματος " + (natural ? "φυσικών προσώπων (Ε1, Ε2, Ε3 κ.λπ.)" : "νομικών προσώπων με τα συνυποβαλλόμενα έντυπα (Ν, Ε3 κ.λπ.)") + ", ανακεφαλαιωτικούς πίνακες ενδοκοινοτικών συναλλαγών (VIES, Intrastat), καθώς και τυχόν τροποποιητικές αυτών.",
+    "Να διαβιβάζουν δεδομένα στην ψηφιακή πλατφόρμα myDATA, να διαχειρίζονται τα σχετικά κλειδιά και τους παρόχους ηλεκτρονικής τιμολόγησης και να προβαίνουν σε κάθε αναγκαία ενέργεια χαρακτηρισμού και συμφωνίας των δεδομένων.",
+    "Να υποβάλλουν δηλώσεις μεταβολής στοιχείων μητρώου, έναρξης ή διακοπής δραστηριοτήτων, μεταβολής έδρας, εκπροσώπων και λοιπών στοιχείων " + (natural ? "μου" : "της εταιρείας") + ", πάντοτε κατόπιν προηγούμενης έγκρισης και ενημέρωσης " + (natural ? "δική μου" : "του νόμιμου εκπροσώπου") + ".",
+    "Να αιτούνται και να παραλαμβάνουν βεβαιώσεις, πιστοποιητικά, αποδεικτικά φορολογικής ενημερότητας, βεβαιώσεις τρέχουσας εικόνας οντότητας, εκτυπώσεις εκκαθαριστικών σημειωμάτων, ταυτότητες οφειλής και κάθε άλλο έγγραφο εκδιδόμενο από την Α.Α.Δ.Ε.",
+    "Να έχουν πρόσβαση στην προσωποποιημένη πληροφόρηση και στη θυρίδα ηλεκτρονικής κοινοποίησης εγγράφων " + (natural ? "μου" : "της εταιρείας") + ", να λαμβάνουν γνώση των κοινοποιούμενων πράξεων και να υποβάλλουν αιτήσεις, υπομνήματα και υπεύθυνες δηλώσεις, πάντοτε κατόπιν προηγούμενης έγκρισης και ενημέρωσης " + (natural ? "δική μου" : "του νόμιμου εκπροσώπου") + ".",
+    "Να προβαίνουν σε ρυθμίσεις οφειλών και να παρακολουθούν την εικόνα οφειλών " + (natural ? "μου" : "της εταιρείας") + ".",
+    (natural ? "Να με εκπροσωπούν" : "Να εκπροσωπούν την εταιρεία") + " ενώπιον της αρμόδιας Δ.Ο.Υ." + (client.doy ? " " + client.doy : "") + ", των Ελεγκτικών Κέντρων και κάθε άλλης υπηρεσίας της Α.Α.Δ.Ε., καταθέτοντας και παραλαμβάνοντας έγγραφα.",
+  ];
+  return `
+  <h1 style="text-align:center">ΕΞΟΥΣΙΟΔΟΤΗΣΗ</h1>
+  <p>${natural ? "Ο/Η κάτωθι υπογεγραμμένος/-η" : "Ο/Η κάτωθι υπογεγραμμένος/-η"} ${b(repName, "[ΟΝΟΜΑΤΕΠΩΝΥΜΟ ΚΑΙ ΠΑΤΡΩΝΥΜΟ]")}, με ΑΔΤ ${b(repId, ".....................")} και ΑΦΜ ${b(repAfm, "[ΑΦΜ]")}, κάτοικος ${b(natural ? client.address : "", "............................................")}, τηλ. ${b(phone, "..................")}, e-mail ${b(email, "..................")},</p>
+  ${natural ? `<p>${client.legalForm === "Ιδιώτης" ? "" : `υπό την ιδιότητά μου ως ατομικού επιχειρηματία με ΑΦΜ ${b(client.afm, "[ΑΦΜ]")}, Δ.Ο.Υ. ${b(client.doy, "[ΔΟΥ]")}, με έδρα ${b(client.address, "[ΕΔΡΑ]")},`}</p>` : `<p>υπό την ιδιότητά μου ως <strong>διαχειριστής και νόμιμος εκπρόσωπος</strong> της εταιρείας με την επωνυμία «${b(client.name, "[ΕΠΩΝΥΜΙΑ]")}», με ΑΦΜ ${b(client.afm, "[ΑΦΜ]")}, Δ.Ο.Υ. ${b(client.doy, "[ΔΟΥ]")}, αριθμό Γ.Ε.ΜΗ. ${b(a.gemiNumber, "[ΓΕΜΗ]")}, με έδρα ${b(client.address, "[ΕΔΡΑ]")},</p>`}
+  <p style="text-align:center"><strong>ΕΞΟΥΣΙΟΔΟΤΩ</strong></p>
+  <p>τον <strong>${e(firm.representative)}</strong>${firm.representativeId ? `, με ΑΔΤ <strong>${e(firm.representativeId)}</strong>` : ""}${firm.representativeAfm ? ` και ΑΦΜ <strong>${e(firm.representativeAfm)}</strong>` : ""}, λογιστή – φοροτεχνικό, καθώς και την εταιρεία «<strong>${e(firm.name)}</strong>», με ΑΦΜ <strong>${e(firm.afm)}</strong>, να ενεργούν, από κοινού ή ο καθένας χωριστά, ως <strong>λογιστές – φοροτεχνικοί</strong> ${natural ? "μου" : "της ανωτέρω εταιρείας"} και ειδικότερα:</p>
+  <ol>${services.map((s) => `<li>${e(s)}</li>`).join("")}</ol>
+  <p><strong>${natural ? "Αναλαμβάνω" : "Ο νόμιμος εκπρόσωπος / διαχειριστής της εταιρείας υποχρεούται"} να παραδίδω έγκαιρα και πλήρως στους ανωτέρω λογιστές – φοροτεχνικούς όλα τα φορολογικά και λογιστικά στοιχεία, παραστατικά, τιμολόγια και κινήσεις (τραπεζικές και ταμειακές) ${natural ? "μου" : "της εταιρείας"}, ώστε να καθίσταται δυνατή η ορθή και εμπρόθεσμη εκπλήρωση των ανωτέρω υποχρεώσεων. Οι εξουσιοδοτούμενοι δεν φέρουν ευθύνη για παραλείψεις ή ανακρίβειες που οφείλονται στη μη έγκαιρη ή ελλιπή παράδοση των ως άνω στοιχείων.</strong></p>
+  <p>Η παρούσα εξουσιοδότηση ισχύει από την ημερομηνία υπογραφής της και μέχρι την έγγραφη ανάκλησή της. Κάθε ενέργεια των ανωτέρω εξουσιοδοτούμενων στο πλαίσιο της παρούσας θεωρείται έγκυρη και δεσμευτική ${natural ? "για εμένα" : "για την εταιρεία"}.</p>
+  <p style="margin-top:24px">......... / ......... / ${new Date().getFullYear()}</p>
+  <p style="text-align:right;margin-top:30px"><strong>Ο εξουσιοδοτών</strong></p>
+  <p style="text-align:right;margin-top:50px">...................................................<br/><strong>${e(repName || "")}</strong><br/><em class="muted">(θεώρηση γνησίου υπογραφής)</em></p>`;
+}
+
+function ClientDocumentsTab({ user, client, documents, employees, refetchDocuments, aml = null, ubos = [], contacts = [], firm = DEFAULT_FIRM }) {
   const [category, setCategory] = useState("other");
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
@@ -6211,6 +6248,11 @@ function ClientDocumentsTab({ user, client, documents, employees, refetchDocumen
   const list = [...documents].filter((d) => filter === "all" || d.category === filter).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
   return (
     <Panel>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+        <span style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted }}>Templates (pre-filled from the client card):</span>
+        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`Εξουσιοδότηση — ${client.name}`, buildAuthorisationHtml({ client, aml, firm, contacts }))}>Εξουσιοδότηση ΑΑΔΕ</Btn>
+        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml, ubos, firm }))}>KYC questionnaire</Btn>
+      </div>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
         <Field label="Category for the next upload">
           <select style={{ ...inputStyle, width: 320 }} value={category} onChange={(e) => setCategory(e.target.value)}>
@@ -6439,6 +6481,93 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
 /* ---------------------------------------------------------------------- */
 /* Due diligence file as printable PDF (time-stamped)                      */
 /* ---------------------------------------------------------------------- */
+
+// Pre-filled KYC questionnaire (ν. 4557/2018, ΠΟΛ.1200/2018) — printed from the Due diligence tab, signed by the client, then uploaded back.
+function buildKycQuestionnaireHtml({ client, aml, ubos, firm = DEFAULT_FIRM }) {
+  const a = aml || {};
+  const e = escapeHtml;
+  const type = a.entityType || amlEntityTypeFor(client.legalForm);
+  const legal = type !== "natural";
+  const v = (x, w = 28) => (x ? `<strong>${e(x)}</strong>` : "&nbsp;".repeat(w));
+  const box = (on) => (on ? "☒" : "☐");
+  const row = (l, val) => `<tr><td style="width:34%;background:#f6f6f6"><strong>${l}</strong></td><td>${val || "&nbsp;"}</td></tr>`;
+  const yn = (l) => `<tr><td>${l}</td><td style="width:60px;text-align:center">☐</td><td style="width:60px;text-align:center">☐</td></tr>`;
+  const ynHead = (h) => `<tr><th>${h}</th><th style="width:60px;text-align:center">ΝΑΙ</th><th style="width:60px;text-align:center">ΟΧΙ</th></tr>`;
+  const myUbos = (ubos || []).filter((u) => u.clientId === client.id);
+  const uboRows = (myUbos.length ? myUbos : [null, null, null]).map((u) => `<tr><td>${u ? e(u.name) : "&nbsp;"}</td><td>${u ? e([u.afm, u.idNumber].filter(Boolean).join(" / ")) : ""}</td><td>${u ? e([u.nationality, u.residenceCountry].filter(Boolean).join(" · ")) : ""}</td><td>${u && u.ownershipPct != null ? e(u.ownershipPct + "%") : ""}</td><td>${u ? e(u.controlType) : ""}</td></tr>`).join("");
+  const sig = `<table style="margin-top:26px"><tr><th style="width:50%">Για τον πελάτη${legal ? " (νόμιμος εκπρόσωπος)" : ""}</th><th>Για το γραφείο (${e(firm.name)})</th></tr><tr><td style="height:90px;vertical-align:top">Ονοματεπώνυμο:<br/>Ιδιότητα:<br/>Ημερομηνία:<br/><br/>Υπογραφή${legal ? " και σφραγίδα" : ""}:</td><td style="vertical-align:top">Ονοματεπώνυμο:<br/>Ιδιότητα:<br/>Ημερομηνία:<br/><br/>Υπογραφή:</td></tr></table>`;
+  const pepRows = ["Αρχηγός κράτους, αρχηγός κυβέρνησης, υπουργός, αναπληρωτής υπουργού ή υφυπουργός", "Μέλος κοινοβουλίου ή αντίστοιχου νομοθετικού σώματος", "Μέλος διοικητικού οργάνου πολιτικού κόμματος", "Μέλος ανώτατου δικαστηρίου, συνταγματικού δικαστηρίου ή άλλου υψηλού επιπέδου δικαστικού οργάνου", "Μέλος ελεγκτικού δικαστηρίου (περιλαμβάνεται το Ελεγκτικό Συνέδριο) ή διοικητικού συμβουλίου κεντρικής τράπεζας", "Πρέσβης, επιτετραμμένος ή ανώτερος αξιωματικός των ενόπλων δυνάμεων", "Μέλος διοικητικού, διαχειριστικού ή εποπτικού οργάνου κρατικής επιχείρησης", "Διευθυντής, αναπληρωτής διευθυντής ή μέλος ΔΣ διεθνούς οργανισμού", "Μέλος της οικογένειας (σύζυγος, τέκνα και σύζυγοί τους, γονείς) ή στενός συνεργάτης των ανωτέρω"].map(yn).join("");
+  return `
+  <h1 style="color:#1f5e3b">ΕΡΩΤΗΜΑΤΟΛΟΓΙΟ ΓΝΩΡΙΜΙΑΣ ΠΕΛΑΤΗ (KYC) ${legal ? "ΓΙΑ ΝΟΜΙΚΟ ΠΡΟΣΩΠΟ" : "ΓΙΑ ΦΥΣΙΚΟ ΠΡΟΣΩΠΟ"}</h1>
+  <p class="muted">ν. 4557/2018 · ταυτοποίηση κατά την ΠΟΛ.1200/2018, Πίνακες ${legal ? "Β, Γ, Δ και Πίνακας Α για τον εκπρόσωπο" : "Α"}. Συμπληρώνεται πριν από τη σύναψη της επιχειρηματικής σχέσης.</p>
+  <table>${row("Πελάτης", v(client.name))}${row("Ημερομηνία συμπλήρωσης", "&nbsp;")}${row("Υπεύθυνος συμμόρφωσης", "&nbsp;")}</table>
+
+  <h2>Α. ΣΤΟΙΧΕΙΑ ΤΑΥΤΟΠΟΙΗΣΗΣ ${legal ? "ΤΟΥ ΝΟΜΙΚΟΥ ΠΡΟΣΩΠΟΥ" : "ΤΟΥ ΠΕΛΑΤΗ"}</h2>
+  ${legal ? `<table>${ynHead("Είδος προσώπου")}<tr><td>Κεφαλαιουχική εταιρεία (Α.Ε., Ε.Π.Ε., Ι.Κ.Ε., μονοπρόσωπη)</td><td style="text-align:center">${box(type === "capital")}</td><td style="text-align:center">${box(type !== "capital")}</td></tr><tr><td>Προσωπική εταιρεία (Ο.Ε., Ε.Ε.)</td><td style="text-align:center">${box(type === "partnership")}</td><td style="text-align:center">${box(type !== "partnership")}</td></tr><tr><td>Λοιπό νομικό πρόσωπο ή οντότητα</td><td style="text-align:center">${box(type === "other")}</td><td style="text-align:center">${box(type !== "other")}</td></tr></table>` : ""}
+  <table class="kv">
+    ${row(legal ? "Επωνυμία και διακριτικός τίτλος" : "Ονοματεπώνυμο", v(client.name))}
+    ${row("Νομική μορφή", v(client.legalForm))}
+    ${row(legal ? "Έδρα (διεύθυνση)" : "Διεύθυνση κατοικίας / επαγγελματικής εγκατάστασης", v(client.address))}
+    ${row("Α.Φ.Μ. και Δ.Ο.Υ.", v([client.afm, client.doy].filter(Boolean).join(" / ")))}
+    ${legal ? row("Αριθμός Γ.Ε.ΜΗ. · ημερομηνία σύστασης", v([a.gemiNumber, a.incorporationDate].filter(Boolean).join(" · "))) : ""}
+    ${row("Κύρια δραστηριότητα / Κ.Α.Δ.", v(a.activity))}
+    ${row("Τηλέφωνο και email επικοινωνίας", v([client.phone, client.email].filter(Boolean).join(" · ")))}
+  </table>
+  <p class="muted">Έγγραφα που προσκομίζονται: ${legal ? "καταστατικό και τροποποιήσεις, πιστοποιητικό Γ.Ε.ΜΗ./ανακοίνωση, πράξη διορισμού διαχειριστών, βεβαίωση έναρξης εργασιών, δήλωση πελάτη." : "ταυτότητα ή διαβατήριο, βεβαίωση έναρξης/μεταβολής εργασιών, απόδειξη διεύθυνσης (λογαριασμός κοινής ωφελείας ή μίσθωση)."}</p>
+
+  <h2>${legal ? "Β. ΝΟΜΙΜΟΣ ΕΚΠΡΟΣΩΠΟΣ (ΠΙΝΑΚΑΣ Α)" : "Β. ΣΤΟΙΧΕΙΑ ΤΑΥΤΟΤΗΤΑΣ (ΠΙΝΑΚΑΣ Α)"}</h2>
+  <table class="kv">
+    ${row("Ονοματεπώνυμο και πατρώνυμο", v(a.representativeName))}
+    ${row("Αριθμός δελτίου ταυτότητας / διαβατηρίου και εκδούσα αρχή", v([a.representativeIdType, a.representativeIdNumber].filter(Boolean).join(" · ")))}
+    ${row("Α.Φ.Μ. εκπροσώπου", v(a.representativeAfm))}
+    ${row("Ημερομηνία και τόπος γέννησης · ιθαγένεια", "&nbsp;")}
+    ${legal ? row("Ιδιότητα (διαχειριστής, πρόεδρος Δ.Σ., εταίρος κ.λπ.)", "&nbsp;") : ""}
+  </table>
+
+  ${legal ? `<h2>Γ. ΠΡΑΓΜΑΤΙΚΟΙ ΔΙΚΑΙΟΥΧΟΙ</h2>
+  <table><tr><th>Ονοματεπώνυμο</th><th>ΑΦΜ / Ταυτότητα</th><th>Ιθαγένεια · Κατοικία</th><th>Ποσοστό</th><th>Τρόπος ελέγχου</th></tr>${uboRows}</table>
+  <table>${ynHead("Έλεγχοι")}
+    ${yn("Η εταιρεία έχει καταχωρίσει τους πραγματικούς δικαιούχους στο Κεντρικό Μητρώο Πραγματικών Δικαιούχων (ΚΜΠΔ)")}
+    ${yn("Προσκομίστηκε μητρώο μετόχων / εταίρων")}
+    ${yn("Υπάρχει σύνθετη δομή ιδιοκτησίας ή εικονικοί μέτοχοι (nominees)")}
+    ${yn("Δεν εντοπίστηκε φυσικό πρόσωπο που κατέχει πάνω από 25% και ορίστηκε ο ανώτερος διευθυντικός παράγοντας")}
+  </table>
+  <p class="muted">Ο πελάτης δεσμεύεται να ενημερώνει το γραφείο για κάθε μεταβολή των πραγματικών δικαιούχων και να την καταχωρίζει στο ΚΜΠΔ εντός εξήντα (60) ημερών.</p>` : ""}
+
+  <h2>${legal ? "Δ" : "Γ"}. ΕΞΟΥΣΙΟΔΟΤΗΜΕΝΟ ΠΡΟΣΩΠΟ</h2>
+  <table class="kv">${row("Ονοματεπώνυμο εξουσιοδοτημένου", v(a.proxyName))}${row("Α.Φ.Μ. / ταυτότητα", v(a.proxyIdNumber))}${row("Έγγραφο νομιμοποίησης (πληρεξούσιο, εξουσιοδότηση)", "&nbsp;")}</table>
+
+  <h2>${legal ? "Ε" : "Δ"}. ΠΟΛΙΤΙΚΑ ΕΚΤΕΘΕΙΜΕΝΑ ΠΡΟΣΩΠΑ</h2>
+  <p class="muted">Άρθρο 3 παρ. 9–11 ν. 4557/2018. Ισχύει για τον ${legal ? "εκπρόσωπο και τους πραγματικούς δικαιούχους" : "πελάτη"}, καθώς και για την οικογένεια και τους στενούς συνεργάτες τους.</p>
+  <table>${ynHead("Κατηγορία")}${pepRows}</table>
+
+  <h2>${legal ? "ΣΤ" : "Ε"}. ΓΕΩΓΡΑΦΙΚΟΙ ΠΑΡΑΓΟΝΤΕΣ</h2>
+  <table>${ynHead("Ερώτηση")}
+    ${yn("Δραστηριότητα, κατοικία ή περιουσιακά στοιχεία σε τρίτη χώρα υψηλού κινδύνου (κατάλογος ΕΕ / FATF)")}
+    ${yn("Σχέση με χώρα που υπόκειται σε κυρώσεις ή εμπάργκο")}
+    ${yn("Οι συναλλαγές εκτελούνται με μεταφορά κεφαλαίων από/προς το εξωτερικό")}
+  </table>
+  <table class="kv">${row("Χώρες δραστηριότητας / συναλλαγών", v(a.countries))}</table>
+
+  <h2>${legal ? "Ζ" : "ΣΤ"}. ΣΚΟΠΟΣ ΚΑΙ ΦΥΣΗ ΤΗΣ ΣΥΝΑΛΛΑΓΙΚΗΣ ΣΧΕΣΗΣ</h2>
+  <table class="kv">
+    ${row("Υπηρεσίες που ζητούνται", v((a.services || []).join(", ")))}
+    ${row("Σκοπός και φύση της σχέσης", v(a.relationshipPurpose))}
+    ${row("Αναμενόμενος όγκος και είδος συναλλαγών", "&nbsp;")}
+    ${row("Προέλευση κεφαλαίων και περιουσίας", v(a.sourceOfFunds))}
+    ${row("Τρόπος πληρωμής αμοιβών (τραπεζικό έμβασμα, κάρτα, μετρητά)", "&nbsp;")}
+  </table>
+
+  <h2>${legal ? "Η" : "Ζ"}. ΕΝΗΜΕΡΩΣΗ ΓΙΑ ΤΗΝ ΕΠΕΞΕΡΓΑΣΙΑ ΠΡΟΣΩΠΙΚΩΝ ΔΕΔΟΜΕΝΩΝ (άρθρο 31 παρ. 2 ν. 4557/2018)</h2>
+  <p>Η ${e(firm.name)}, ως υπόχρεο πρόσωπο, επεξεργάζεται τα προσωπικά δεδομένα που περιλαμβάνονται στο παρόν και στα συνημμένα έγγραφα αποκλειστικά για την πρόληψη της νομιμοποίησης εσόδων από εγκληματικές δραστηριότητες και της χρηματοδότησης της τρομοκρατίας. Τα δεδομένα δεν χρησιμοποιούνται για άλλους σκοπούς.</p>
+  <p>Τα δεδομένα φυλάσσονται για πέντε (5) έτη μετά τη λήξη της επιχειρηματικής σχέσης, εκτός αν άλλη διάταξη επιβάλλει μεγαλύτερη διάρκεια. Μπορούν να διαβιβαστούν στην Αρχή Καταπολέμησης της Νομιμοποίησης Εσόδων από Εγκληματικές Δραστηριότητες και σε άλλες αρμόδιες αρχές, όταν ο νόμος το επιβάλλει. Έχετε δικαίωμα πρόσβασης και διόρθωσης, ενώ το δικαίωμα διαγραφής δεν ασκείται όσο διαρκεί η υποχρεωτική τήρηση. Μπορείτε να απευθυνθείτε στο γραφείο και να προσφύγετε στην Αρχή Προστασίας Δεδομένων Προσωπικού Χαρακτήρα.</p>
+  ${legal ? `<p>Η ενημέρωση αυτή αφορά και τα φυσικά πρόσωπα που συνδέονται με την εταιρεία (πραγματικοί δικαιούχοι, εκπρόσωποι). Ο εκπρόσωπος δηλώνει ότι τα ενημέρωσε.</p>` : ""}
+
+  <h2>ΔΗΛΩΣΕΙΣ ΚΑΙ ΥΠΟΓΡΑΦΕΣ</h2>
+  <p>Ο υπογράφων δηλώνει ότι τα ανωτέρω στοιχεία είναι αληθή και ακριβή και αναλαμβάνει την υποχρέωση να γνωστοποιεί χωρίς καθυστέρηση κάθε μεταβολή τους${legal ? ", ιδίως ως προς τους πραγματικούς δικαιούχους, τη δομή διοίκησης, τη δραστηριότητα και την ιδιότητα πολιτικώς εκτεθειμένου προσώπου" : ", ιδίως ως προς τη διεύθυνση, τη δραστηριότητα και την ιδιότητα πολιτικώς εκτεθειμένου προσώπου"}. Δηλώνει επίσης ότι έλαβε την ανωτέρω ενημέρωση πριν από τη σύναψη της επιχειρηματικής σχέσης.</p>
+  ${sig}
+  <div class="footer">KYC ${legal ? "νομικού" : "φυσικού"} προσώπου · ν. 4557/2018 · ${e(client.name)}</div>`;
+}
 
 function buildDueDiligenceHtml({ client, aml, ubos, documents, employees, tasks }) {
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
@@ -6809,6 +6938,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
                   {files.map((x) => <div key={x.id} style={{ fontSize: 11.5 }}><button onClick={() => openClientDocument(x)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 11.5, color: C.accentDark, textDecoration: "underline" }}>{x.fileName}</button> <span style={{ color: C.inkFaint }}>{x.uploadedAt.slice(0, 10)}</span></div>)}
                 </span>
                 <input type="date" style={{ ...inputStyle, width: 140, padding: "4px 6px", fontSize: 12 }} value={st.date || ""} onChange={(e) => setDoc(d.key, { date: e.target.value })} disabled={!st.collected} />
+                {d.key === "kyc_form" && <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml: { ...(aml || {}), ...f }, ubos }))}>Print KYC form</Btn>}
                 <UploadButton label={files.length ? "Upload another" : "Upload"} onFile={async (file) => { if (await uploadClientDocument(client, file, d.key, "", user)) { setDoc(d.key, { collected: true, date: st.date || toKey(TODAY) }); refetchDocuments && refetchDocuments(); } }} />
               </div>
             );
@@ -7129,7 +7259,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
 
       {tab === "fees" && <ClientFeesTab client={client} entries={entries} employees={employees} refetchClients={refetchClients} />}
       {tab === "agreement" && <ClientAgreementTab user={user} client={client} aml={aml} firm={firm} saveFirm={saveFirm} employees={employees} contacts={myContacts} ubos={ubos} documents={documents} refetchClients={refetchClients} refetchDocuments={refetchDocuments} />}
-      {tab === "documents" && <ClientDocumentsTab user={user} client={client} documents={documents} employees={employees} refetchDocuments={refetchDocuments} />}
+      {tab === "documents" && <ClientDocumentsTab user={user} client={client} documents={documents} employees={employees} refetchDocuments={refetchDocuments} aml={aml} ubos={ubos} contacts={myContacts} firm={firm} />}
       {tab === "dd" && (
         <DueDiligenceTab user={user} client={client} employees={employees} aml={aml} ubos={ubos} tasks={tasks} documents={documents} refetchDocuments={refetchDocuments} refetchDueDiligence={refetchDueDiligence} refetchTasks={refetchTasks} />
       )}
