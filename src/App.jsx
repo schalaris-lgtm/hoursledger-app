@@ -1232,8 +1232,9 @@ function printHtml(title, bodyHtml, { draft = false, editable = false } = {}) {
     @media print { .noprint { display: none; } }
   </style></head><body>
   ${draft ? '<div class="stamp">DRAFT</div>' : ""}
-  <div class="noprint" style="margin-bottom:14px;font-family:sans-serif;font-size:12px;color:#555">${editable ? "<strong>Μπορείτε να πληκτρολογήσετε απευθείας πάνω στο έντυπο</strong> για να συμπληρώσετε τα κενά πριν την εκτύπωση. " : ""}Use your browser's Print and choose "Save as PDF". <button onclick="window.print()">Print / Save as PDF</button></div>
+  <div class="noprint" style="margin-bottom:14px;font-family:sans-serif;font-size:12px;color:#555">${editable ? "<strong>Μπορείτε να πληκτρολογήσετε απευθείας πάνω στο έντυπο και να πατήσετε τα ☐ για επιλογή.</strong> " : ""}Use your browser's Print and choose "Save as PDF". <button onclick="window.print()">Print / Save as PDF</button></div>
   <div${editable ? ' contenteditable="true" style="outline:none"' : ""}>${bodyHtml}</div>
+  <script>document.addEventListener("click", function (ev) { var t = ev.target; if (t && t.classList && t.classList.contains("cb")) { t.textContent = t.textContent.trim() === "☒" ? "☐" : "☒"; } });</script>
   </body></html>`);
   w.document.close();
   if (!editable) setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* user can press the button */ } }, 400);
@@ -6416,7 +6417,7 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
     if (status === "draft" && client.contractStatus === "signed") patch.contract_version = client.contractVersion + 1;
     await saveTerms(patch);
   }
-  const preview = () => printHtml(`Σύμβαση — ${client.name}`, buildAgreementHtml({ client: previewClient, aml, firm: { ...DEFAULT_FIRM, ...firm }, employees, contacts }), { draft: client.contractStatus !== "signed" });
+  const preview = () => printHtml(`Σύμβαση — ${client.name}`, buildAgreementHtml({ client: previewClient, aml, firm: { ...DEFAULT_FIRM, ...firm }, employees, contacts }), { draft: false });
 
   return (
     <div>
@@ -6489,14 +6490,19 @@ function buildKycQuestionnaireHtml({ client, aml, ubos, firm = DEFAULT_FIRM }) {
   const type = a.entityType || amlEntityTypeFor(client.legalForm);
   const legal = type !== "natural";
   const v = (x, w = 28) => (x ? `<strong>${e(x)}</strong>` : "&nbsp;".repeat(w));
-  const box = (on) => (on ? "☒" : "☐");
+  const box = (on) => `<span class="cb" contenteditable="false" style="cursor:pointer;user-select:none">${on ? "☒" : "☐"}</span>`;
+  const docs = a.documents || {};
+  const rf = new Set(a.riskFactors || []);
+  const checked = !!a.sanctionsCheckedOn; // PEP / sanctions screening done → "no" answers can be ticked from the file
+  const noUbo = !rf.has("a_ubo_unknown");
   const row = (l, val) => `<tr><td style="width:34%;background:#f6f6f6"><strong>${l}</strong></td><td>${val || "&nbsp;"}</td></tr>`;
-  const yn = (l) => `<tr><td>${l}</td><td style="width:60px;text-align:center">☐</td><td style="width:60px;text-align:center">☐</td></tr>`;
+  // v: true → ΝΑΙ ticked, false → ΟΧΙ ticked, undefined → both blank (client answers)
+  const yn = (l, v) => `<tr><td>${l}</td><td style="width:60px;text-align:center">${box(v === true)}</td><td style="width:60px;text-align:center">${box(v === false)}</td></tr>`;
   const ynHead = (h) => `<tr><th>${h}</th><th style="width:60px;text-align:center">ΝΑΙ</th><th style="width:60px;text-align:center">ΟΧΙ</th></tr>`;
   const myUbos = (ubos || []).filter((u) => u.clientId === client.id);
   const uboRows = (myUbos.length ? myUbos : [null, null, null]).map((u) => `<tr><td>${u ? e(u.name) : "&nbsp;"}</td><td>${u ? e([u.afm, u.idNumber].filter(Boolean).join(" / ")) : ""}</td><td>${u ? e([u.nationality, u.residenceCountry].filter(Boolean).join(" · ")) : ""}</td><td>${u && u.ownershipPct != null ? e(u.ownershipPct + "%") : ""}</td><td>${u ? e(u.controlType) : ""}</td></tr>`).join("");
   const sig = `<table style="margin-top:26px"><tr><th style="width:50%">Για τον πελάτη${legal ? " (νόμιμος εκπρόσωπος)" : ""}</th><th>Για το γραφείο (${e(firm.name)})</th></tr><tr><td style="height:90px;vertical-align:top">Ονοματεπώνυμο:<br/>Ιδιότητα:<br/>Ημερομηνία:<br/><br/>Υπογραφή${legal ? " και σφραγίδα" : ""}:</td><td style="vertical-align:top">Ονοματεπώνυμο:<br/>Ιδιότητα:<br/>Ημερομηνία:<br/><br/>Υπογραφή:</td></tr></table>`;
-  const pepRows = ["Αρχηγός κράτους, αρχηγός κυβέρνησης, υπουργός, αναπληρωτής υπουργού ή υφυπουργός", "Μέλος κοινοβουλίου ή αντίστοιχου νομοθετικού σώματος", "Μέλος διοικητικού οργάνου πολιτικού κόμματος", "Μέλος ανώτατου δικαστηρίου, συνταγματικού δικαστηρίου ή άλλου υψηλού επιπέδου δικαστικού οργάνου", "Μέλος ελεγκτικού δικαστηρίου (περιλαμβάνεται το Ελεγκτικό Συνέδριο) ή διοικητικού συμβουλίου κεντρικής τράπεζας", "Πρέσβης, επιτετραμμένος ή ανώτερος αξιωματικός των ενόπλων δυνάμεων", "Μέλος διοικητικού, διαχειριστικού ή εποπτικού οργάνου κρατικής επιχείρησης", "Διευθυντής, αναπληρωτής διευθυντής ή μέλος ΔΣ διεθνούς οργανισμού", "Μέλος της οικογένειας (σύζυγος, τέκνα και σύζυγοί τους, γονείς) ή στενός συνεργάτης των ανωτέρω"].map(yn).join("");
+  const pepRows = ["Αρχηγός κράτους, αρχηγός κυβέρνησης, υπουργός, αναπληρωτής υπουργού ή υφυπουργός", "Μέλος κοινοβουλίου ή αντίστοιχου νομοθετικού σώματος", "Μέλος διοικητικού οργάνου πολιτικού κόμματος", "Μέλος ανώτατου δικαστηρίου, συνταγματικού δικαστηρίου ή άλλου υψηλού επιπέδου δικαστικού οργάνου", "Μέλος ελεγκτικού δικαστηρίου (περιλαμβάνεται το Ελεγκτικό Συνέδριο) ή διοικητικού συμβουλίου κεντρικής τράπεζας", "Πρέσβης, επιτετραμμένος ή ανώτερος αξιωματικός των ενόπλων δυνάμεων", "Μέλος διοικητικού, διαχειριστικού ή εποπτικού οργάνου κρατικής επιχείρησης", "Διευθυντής, αναπληρωτής διευθυντής ή μέλος ΔΣ διεθνούς οργανισμού", "Μέλος της οικογένειας (σύζυγος, τέκνα και σύζυγοί τους, γονείς) ή στενός συνεργάτης των ανωτέρω"].map((l) => yn(l, checked && (a.pepStatus || "none") === "none" ? false : undefined)).join("");
   return `
   <h1 style="color:#1f5e3b">ΕΡΩΤΗΜΑΤΟΛΟΓΙΟ ΓΝΩΡΙΜΙΑΣ ΠΕΛΑΤΗ (KYC) ${legal ? "ΓΙΑ ΝΟΜΙΚΟ ΠΡΟΣΩΠΟ" : "ΓΙΑ ΦΥΣΙΚΟ ΠΡΟΣΩΠΟ"}</h1>
   <p class="muted">ν. 4557/2018 · ταυτοποίηση κατά την ΠΟΛ.1200/2018, Πίνακες ${legal ? "Β, Γ, Δ και Πίνακας Α για τον εκπρόσωπο" : "Α"}. Συμπληρώνεται πριν από τη σύναψη της επιχειρηματικής σχέσης.</p>
@@ -6527,10 +6533,10 @@ function buildKycQuestionnaireHtml({ client, aml, ubos, firm = DEFAULT_FIRM }) {
   ${legal ? `<h2>Γ. ΠΡΑΓΜΑΤΙΚΟΙ ΔΙΚΑΙΟΥΧΟΙ</h2>
   <table><tr><th>Ονοματεπώνυμο</th><th>ΑΦΜ / Ταυτότητα</th><th>Ιθαγένεια · Κατοικία</th><th>Ποσοστό</th><th>Τρόπος ελέγχου</th></tr>${uboRows}</table>
   <table>${ynHead("Έλεγχοι")}
-    ${yn("Η εταιρεία έχει καταχωρίσει τους πραγματικούς δικαιούχους στο Κεντρικό Μητρώο Πραγματικών Δικαιούχων (ΚΜΠΔ)")}
-    ${yn("Προσκομίστηκε μητρώο μετόχων / εταίρων")}
-    ${yn("Υπάρχει σύνθετη δομή ιδιοκτησίας ή εικονικοί μέτοχοι (nominees)")}
-    ${yn("Δεν εντοπίστηκε φυσικό πρόσωπο που κατέχει πάνω από 25% και ορίστηκε ο ανώτερος διευθυντικός παράγοντας")}
+    ${yn("Η εταιρεία έχει καταχωρίσει τους πραγματικούς δικαιούχους στο Κεντρικό Μητρώο Πραγματικών Δικαιούχων (ΚΜΠΔ)", docs.ubo_registry?.collected ? true : undefined)}
+    ${yn("Προσκομίστηκε μητρώο μετόχων / εταίρων", docs.shareholders?.collected ? true : undefined)}
+    ${yn("Υπάρχει σύνθετη δομή ιδιοκτησίας ή εικονικοί μέτοχοι (nominees)", rf.has("a_nominee") || rf.has("a_complex") ? true : docs.shareholders?.collected ? false : undefined)}
+    ${yn("Δεν εντοπίστηκε φυσικό πρόσωπο που κατέχει πάνω από 25% και ορίστηκε ο ανώτερος διευθυντικός παράγοντας", rf.has("a_ubo_unknown") ? true : myUbos.length ? false : undefined)}
   </table>
   <p class="muted">Ο πελάτης δεσμεύεται να ενημερώνει το γραφείο για κάθε μεταβολή των πραγματικών δικαιούχων και να την καταχωρίζει στο ΚΜΠΔ εντός εξήντα (60) ημερών.</p>` : ""}
 
@@ -6540,11 +6546,12 @@ function buildKycQuestionnaireHtml({ client, aml, ubos, firm = DEFAULT_FIRM }) {
   <h2>${legal ? "Ε" : "Δ"}. ΠΟΛΙΤΙΚΑ ΕΚΤΕΘΕΙΜΕΝΑ ΠΡΟΣΩΠΑ</h2>
   <p class="muted">Άρθρο 3 παρ. 9–11 ν. 4557/2018. Ισχύει για τον ${legal ? "εκπρόσωπο και τους πραγματικούς δικαιούχους" : "πελάτη"}, καθώς και για την οικογένεια και τους στενούς συνεργάτες τους.</p>
   <table>${ynHead("Κατηγορία")}${pepRows}</table>
+  ${(a.pepStatus || "none") !== "none" ? `<p><strong>Σημείωση γραφείου:</strong> στον φάκελο έχει καταχωριστεί ΠΕΠ (${e(a.pepStatus)}${a.pepDetails ? " · " + e(a.pepDetails) : ""}). Σημειώστε την αντίστοιχη κατηγορία.</p>` : ""}
 
   <h2>${legal ? "ΣΤ" : "Ε"}. ΓΕΩΓΡΑΦΙΚΟΙ ΠΑΡΑΓΟΝΤΕΣ</h2>
   <table>${ynHead("Ερώτηση")}
-    ${yn("Δραστηριότητα, κατοικία ή περιουσιακά στοιχεία σε τρίτη χώρα υψηλού κινδύνου (κατάλογος ΕΕ / FATF)")}
-    ${yn("Σχέση με χώρα που υπόκειται σε κυρώσεις ή εμπάργκο")}
+    ${yn("Δραστηριότητα, κατοικία ή περιουσιακά στοιχεία σε τρίτη χώρα υψηλού κινδύνου (κατάλογος ΕΕ / FATF)", rf.has("b_eu_list") || rf.has("b_weak_aml") ? true : checked ? false : undefined)}
+    ${yn("Σχέση με χώρα που υπόκειται σε κυρώσεις ή εμπάργκο", rf.has("b_sanctions") || rf.has("b_terror") ? true : checked ? false : undefined)}
     ${yn("Οι συναλλαγές εκτελούνται με μεταφορά κεφαλαίων από/προς το εξωτερικό")}
   </table>
   <table class="kv">${row("Χώρες δραστηριότητας / συναλλαγών", v(a.countries))}</table>
