@@ -101,6 +101,45 @@ const fmtMonthKey = (k) => k ? fromKey(k + "-01").toLocaleDateString("en-GB", { 
 const rentalExpenseAppliesTo = (x, monthKey) => x.kind === "recurring"
   ? (!!x.fromMonth && x.fromMonth <= monthKey && (!x.toMonth || monthKey <= x.toMonth))
   : x.month === monthKey;
+// Other operating expenses (OPEX): insurance, accounting software, bank
+// charges, equipment depreciation, AI costs, business development, other.
+// Same shape as rental expenses (recurring from–to, or extra for one month;
+// extras may be negative). Each one is allocated to a department, or to
+// "general" (company-wide, not attributed to a department).
+const OPEX_CATEGORIES = ["insurance", "accounting_software", "bank_costs", "depreciation", "ai_costs", "business_development", "other"];
+const OPEX_LABELS = {
+  insurance: "Insurance (ασφάλειες)", accounting_software: "Accounting software (λογιστικά προγράμματα)", bank_costs: "Bank charges (τραπεζικά κόστη)",
+  depreciation: "Equipment depreciation (αποσβέσεις εξοπλισμού)", ai_costs: "AI costs", business_development: "Business development", other: "Other (note required)",
+};
+const OPEX_GENERAL = "general";
+OPEX_LABELS.rental = "Rental (ενοίκια, utilities, κοινόχρηστα)";
+const OPEX_DISPLAY_CATEGORIES = ["rental", ...OPEX_CATEGORIES]; // "rental" comes from the Rental page
+const opexDepartmentLabel = (key) => key === OPEX_GENERAL ? "General (company-wide)" : (DEPARTMENTS.find((d) => d.key === key)?.label || key);
+const mapOpex = (r) => ({ id: r.id, kind: r.kind === "recurring" ? "recurring" : "extra", month: r.month || null, fromMonth: r.from_month || null, toMonth: r.to_month || null, category: r.category, department: r.department || OPEX_GENERAL, amount: Number(r.amount), note: r.note || "" });
+// Operating expenses accrued over a date range (daily accrual by month, like rental expenses).
+// Rental expenses (rent, utilities, common expenses) count here too — they are
+// operating expenses, attributed to the Rental department.
+function opexForRange(expenses, rangeStart, rangeEnd, rentalExpenses = []) {
+  const byCategory = Object.fromEntries(OPEX_DISPLAY_CATEGORIES.map((k) => [k, 0]));
+  const byDepartment = { accounting_team: 0, management_team: 0, rental: 0, [OPEX_GENERAL]: 0 };
+  let total = 0;
+  let d = new Date(rangeStart);
+  while (d <= rangeEnd) {
+    const monthKey = monthKeyOf(d);
+    const days = endOfMonth(d).getDate();
+    (expenses || []).filter((x) => rentalExpenseAppliesTo(x, monthKey)).forEach((x) => {
+      const amt = (Number(x.amount) || 0) / days;
+      byCategory[OPEX_CATEGORIES.includes(x.category) ? x.category : "other"] += amt;
+      const dep = x.department in byDepartment ? x.department : OPEX_GENERAL;
+      byDepartment[dep] += amt;
+      total += amt;
+    });
+    d = addDays(d, 1);
+  }
+  const rent = rentalExpensesForRange(rentalExpenses, rangeStart, rangeEnd).total;
+  byCategory.rental += rent; byDepartment.rental += rent; total += rent;
+  return { total, byCategory, byDepartment };
+}
 const UNALLOCATED = "unallocated"; // fixed fees with no split yet, or cost of employees with no hours and no fixed cost center
 const DEFAULT_DEPARTMENT = "accounting_team";
 const departmentLabel = (key) => DEPARTMENTS.find((d) => d.key === key)?.label || key;
@@ -998,6 +1037,7 @@ function Sidebar({ user, view, setView }) {
     { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "employees", label: "Employees", icon: Users },
     { key: "rental", label: "Rental", icon: Home },
+    { key: "opex", label: "Operating Expenses", icon: Wallet },
     { key: "reports", label: "Reports", icon: SlidersHorizontal },
     { key: "billing", label: "Billing", icon: Receipt },
     { key: "compliance", label: "AML Compliance", icon: AlertTriangle },
@@ -1119,7 +1159,8 @@ function computePeriodTotals(clients, employees, entries, rentalExpenses, rStart
     .reduce((sum, c) => sum + periodClientMetrics(c, rangeEntries.filter((e) => e.clientId === c.id), rStart, rEnd).revenue, 0);
   const laborCost = employees.filter((e) => employeeBilledInRange(e, rStart, rEnd))
     .reduce((sum, e) => sum + periodEmployeeCost(e, rStart, rEnd), 0);
-  const cost = laborCost + rentalExpensesForRange(rentalExpenses, rStart, rEnd).total;
+  // Rental expenses are operating expenses now (below gross profit), so cost here is labor only.
+  const cost = laborCost;
   const hours = rangeEntries.reduce((s, e) => s + e.hours, 0);
   const profit = revenue - cost;
   return { revenue, cost, profit, hours, margin: revenue > 0 ? (profit / revenue) * 100 : null };
@@ -1154,6 +1195,8 @@ const mapClientRow = (r) => ({
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
   contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null,
+  annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
+  formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
 });
 const mapDocument = (r) => ({ id: r.id, clientId: r.client_id, category: r.category || "other", fileName: r.file_name, filePath: r.file_path, fileSize: Number(r.file_size) || 0, mimeType: r.mime_type || "", note: r.note || "", uploadedBy: r.uploaded_by || null, uploadedAt: r.uploaded_at });
 const DOCUMENT_BUCKET = "client-documents";
@@ -2175,7 +2218,7 @@ function TeamCalendar({ employees, leaveRequests }) {
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
 
-function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
+function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, operatingExpenses = [], tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const DEFAULT_DASHBOARD_CONFIG = {
@@ -2269,9 +2312,16 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // Non-labor cost: rental expenses (rent, utilities, common expenses) booked
   // per property and month — all of it belongs to the Rental cost center.
   const rentalExp = rentalExpensesForRange(rentalExpenses, rangeStart, rangeEnd);
-  const totalCost = totalLaborCost + rentalExp.total;
+  // Rental expenses are classified as operating expenses (below gross profit), so
+  // cost / gross profit = labor only.
+  const totalCost = totalLaborCost;
   const totalProfit = totalRevenue - totalCost;
   const overallMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : null;
+  // Other operating expenses (insurance, software, bank charges, depreciation, AI, business development…):
+  // gross profit (above) minus these = operating profit.
+  const opex = opexForRange(operatingExpenses, rangeStart, rangeEnd, rentalExpenses);
+  const operatingProfit = totalProfit - opex.total;
+  const operatingMargin = totalRevenue > 0 ? (operatingProfit / totalRevenue) * 100 : null;
 
   // Revenue per cost center first (needed as the allocation key for
   // departments that don't log hours), then each employee's cost spread
@@ -2283,7 +2333,6 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     ec.byCostCenter = employeeCostByCostCenter(emp, ec.cost, ec.entries, revenueByCC);
   });
   const costByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
-  costByDepartment.rental += rentalExp.total;
   const unallocatedCostByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
   employeeCosts.forEach((ec) => {
     costByDepartment[ec.department] = (costByDepartment[ec.department] || 0) + ec.cost;
@@ -2296,7 +2345,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   // no hours or revenue to spread it by.
   const byCostCenter = [...COST_CENTERS, UNALLOCATED].map((cc) => {
     const revenue = revenueByCC[cc] || 0;
-    const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0) + (cc === "rental" ? rentalExp.total : 0);
+    const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0);
     const profit = revenue - cost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : null;
     return { key: cc, label: costCenterLabel(cc), revenue, cost, profit, margin };
@@ -2389,8 +2438,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     }).length;
     const monthEntries = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
     const revenue = clients.filter((c) => clientBilledInRange(c, m.start, m.end)).reduce((sum, c) => sum + periodClientMetrics(c, monthEntries.filter((e) => e.clientId === c.id), m.start, m.end).revenue, 0);
-    const cost = employees.filter((e) => employeeBilledInRange(e, m.start, m.end)).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0)
-      + rentalExpensesForRange(rentalExpenses, m.start, m.end).total;
+    const cost = employees.filter((e) => employeeBilledInRange(e, m.start, m.end)).reduce((sum, e) => sum + periodEmployeeCost(e, m.start, m.end), 0);
     return { label: m.label, newClients, revenue, cost, profit: revenue - cost };
   });
 
@@ -2506,9 +2554,12 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           <StatCard label="New employees this period" value={newEmployeesThisPeriod.length} sub={newEmployeesThisPeriod.length ? fmtEur(newHiresCost) + " added to labor cost" : "None started this period"} />
           <StatCard label="Revenue this period" value={fmtEur(totalRevenue)} accent={C.accent} sub="Fixed fees + extra fees" />
           <StatCard label="Labor cost this period" value={fmtEur(totalLaborCost)} sub="Gross + benefits, prorated" />
-          <StatCard label="Rental expenses this period" value={fmtEur(rentalExp.total)} sub="Rent + utilities + common expenses" />
-          <StatCard label="Profit this period" value={fmtEur(totalProfit)} accent={totalProfit < 0 ? C.danger : C.accent} sub="Revenue − labor − rental expenses" />
-          <StatCard label="Overall margin" value={overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"} accent={overallMargin !== null && overallMargin < 0 ? C.danger : C.accent} sub="(Revenue − cost) ÷ revenue" />
+          <StatCard label="Rental expenses this period" value={fmtEur(rentalExp.total)} sub="Included in operating expenses" />
+          <StatCard label="Gross profit this period" value={fmtEur(totalProfit)} accent={totalProfit < 0 ? C.danger : C.accent} sub="Revenue − labor cost" />
+          <StatCard label="Gross margin" value={overallMargin !== null ? overallMargin.toFixed(0) + "%" : "—"} accent={overallMargin !== null && overallMargin < 0 ? C.danger : C.accent} sub="(Revenue − cost) ÷ revenue" />
+          <StatCard label="Operating expenses" value={fmtEur(opex.total)} sub="Insurance, software, bank, depreciation, AI, business dev." />
+          <StatCard label="Operating profit" value={fmtEur(operatingProfit)} accent={operatingProfit < 0 ? C.danger : C.accent} sub="Gross profit − operating expenses" />
+          <StatCard label="Operating margin" value={operatingMargin !== null ? operatingMargin.toFixed(0) + "%" : "—"} accent={operatingMargin !== null && operatingMargin < 0 ? C.danger : C.accent} sub="Operating profit ÷ revenue" />
           <StatCard label="Avg. effective rate" value={fmtEur(avgEffectiveRate) + "/h"} sub="Revenue ÷ hours worked" />
         </div>
       )}
@@ -2860,6 +2911,25 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
               </tr>
             ))}
           </TableShell>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13.5, color: C.ink, margin: "18px 0 4px" }}>Operating result</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Gross profit − operating expenses = operating profit. Expenses booked as "General" are company-wide and not attributed to a department.</div>
+          <TableShell headers={["", "Gross profit", "− Operating expenses", "= Operating profit", "Operating margin"]}>
+            {[
+              ...byDepartment.map((d) => ({ key: d.key, label: d.label, gross: d.profit, ox: opex.byDepartment[d.key] || 0, revenue: d.revenue })),
+              ...(Math.abs(opex.byDepartment[OPEX_GENERAL]) > 0.005 || (revenueByCC[UNALLOCATED] || 0) > 0.005 ? [{ key: OPEX_GENERAL, label: "General / not allocated", gross: revenueByCC[UNALLOCATED] || 0, ox: opex.byDepartment[OPEX_GENERAL] || 0, revenue: revenueByCC[UNALLOCATED] || 0 }] : []),
+            ].concat([{ key: "total", label: "Company total", gross: totalProfit, ox: opex.total, revenue: totalRevenue }]).map((r) => {
+              const op = r.gross - r.ox; const mg = r.revenue > 0 ? (op / r.revenue) * 100 : null;
+              return (
+                <tr key={r.key} style={{ fontWeight: r.key === "total" ? 700 : 400, borderTop: r.key === "total" ? `2px solid ${C.borderStrong}` : undefined }}>
+                  <Td>{r.label}</Td>
+                  <Td mono>{fmtEur(r.gross)}</Td>
+                  <Td mono>{fmtEur(r.ox)}</Td>
+                  <Td mono style={{ color: op < 0 ? C.danger : C.accentDark, fontWeight: 700 }}>{fmtEur(op)}</Td>
+                  <Td>{mg !== null ? <Badge tone={mg < 0 ? "danger" : mg < 20 ? "warn" : "accent"}>{mg.toFixed(1)}%</Badge> : "—"}</Td>
+                </tr>
+              );
+            })}
+          </TableShell>
         </Panel>
       )}
 
@@ -2928,7 +2998,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         <Panel style={{ marginBottom: 18 }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Revenue &amp; cost by cost center</div>
           <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
-            Fixed fees follow each client's cost-center split, extra fees their own tag. Labor cost follows each employee's department: Accounting Team by logged hours, other departments in proportion to the department's revenue by cost center. Rental expenses (rent, utilities, common expenses) are added to the Rental cost center.
+            Fixed fees follow each client's cost-center split, extra fees their own tag. Labor cost follows each employee's department: Accounting Team by logged hours, other departments in proportion to the department's revenue by cost center. Rental expenses (rent, utilities, common expenses) are operating expenses, shown below gross profit.
           </div>
           <div style={{ width: "100%", height: 220, marginBottom: 14 }}>
             <ResponsiveContainer>
@@ -2967,7 +3037,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
       {config.companyMonthlyTable && (
         <Panel style={{ marginBottom: 18 }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Company overview, by month</div>
-          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>New clients, revenue, cost (labor + rental expenses), and profit — last 6 months.</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>New clients, revenue, labor cost, and gross profit — last 6 months.</div>
           <TableShell headers={["Month", "New clients", "Revenue", "Cost", "Profit"]}>
             {companyMonthly.map((m, i) => (
               <tr key={i}>
@@ -4126,7 +4196,7 @@ function AdminEmployees({ employees, refetchEmployees, entries }) {
               </select>
             </Field>
             <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, lineHeight: 1.5, marginTop: -4 }}>
-              Accounting Team cost is spread across Accounting / Tax / Payroll / Other by the hours logged each period. Management Team cost is split between Director and Finance in proportion to that period's Director/Finance fees. Rental goes entirely to the Rental cost center.
+              Accounting Team cost is spread across Accounting / Tax / Payroll / Other by the hours logged each period. Management Team cost is split between Director and Finance in proportion to that period's Director/Finance fees. Rental expenses are operating expenses, not part of department labor cost.
             </div>
             <Field label="Departure date (optional) — leave empty while still with the firm">
               <input type="date" style={inputStyle} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
@@ -4371,7 +4441,7 @@ function AdminRental({ properties, expenses, refetchRental }) {
         {RENTAL_EXPENSE_CATEGORIES.map((k) => (
           <StatCard key={k} label={RENTAL_EXPENSE_LABELS[k]} value={fmtEur(accrued.byCategory[k])} sub="This period" />
         ))}
-        <StatCard label="Total rental expenses" value={fmtEur(accrued.total)} accent={C.accent} sub="Goes to the Rental cost center" />
+        <StatCard label="Total rental expenses" value={fmtEur(accrued.total)} accent={C.accent} sub="Counted in operating expenses" />
       </div>
 
       <Panel style={{ marginBottom: 18 }}>
@@ -4518,6 +4588,161 @@ function AdminRental({ properties, expenses, refetchRental }) {
 }
 
 
+function AdminOpex({ expenses, refetchOpex, rentalExpenses = [] }) {
+  const [viewPeriod, setViewPeriod] = useState("month");
+  const [viewAnchor, setViewAnchor] = useState(TODAY);
+  const [modal, setModal] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [kind, setKind] = useState("recurring");
+  const [month, setMonth] = useState(toKey(TODAY).slice(0, 7));
+  const [fromMonth, setFromMonth] = useState(toKey(TODAY).slice(0, 7));
+  const [toMonth, setToMonth] = useState("");
+  const [category, setCategory] = useState("insurance");
+  const [department, setDepartment] = useState(OPEX_GENERAL);
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+
+  const [rangeStart, rangeEnd] = periodRange(viewPeriod, viewAnchor);
+  const accrued = opexForRange(expenses, rangeStart, rangeEnd, rentalExpenses);
+  const monthsInRange = [];
+  for (let d = startOfMonth(rangeStart); d <= rangeEnd; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) monthsInRange.push(monthKeyOf(d));
+  const startKeyOf = (x) => x.kind === "recurring" ? (x.fromMonth || "") : (x.month || "");
+  const periodEntries = expenses
+    .filter((x) => monthsInRange.some((m) => rentalExpenseAppliesTo(x, m)))
+    .filter((x) => catFilter === "all" || x.category === catFilter)
+    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "recurring" ? -1 : 1) || startKeyOf(b).localeCompare(startKeyOf(a)));
+  const whenLabel = (x) => x.kind === "recurring" ? `${fmtMonthKey(x.fromMonth)} → ${x.toMonth ? fmtMonthKey(x.toMonth) : "open"}` : fmtMonthKey(x.month);
+
+  function openNew(k = "recurring") {
+    setEditingId(null); setKind(k);
+    const m = monthKeyOf(rangeStart);
+    setMonth(m); setFromMonth(m); setToMonth(""); setCategory("insurance"); setDepartment(OPEX_GENERAL); setAmount(""); setNote("");
+    setModal(true);
+  }
+  function openEdit(x) {
+    setEditingId(x.id); setKind(x.kind);
+    setMonth(x.month || monthKeyOf(rangeStart)); setFromMonth(x.fromMonth || monthKeyOf(rangeStart)); setToMonth(x.toMonth || "");
+    setCategory(x.category); setDepartment(x.department); setAmount(String(x.amount)); setNote(x.note || "");
+    setModal(true);
+  }
+  async function save() {
+    if (kind === "recurring" && !(Number(amount) > 0)) { window.alert("Enter a monthly amount greater than zero."); return; }
+    if (kind === "extra" && (amount === "" || Number.isNaN(Number(amount)) || Number(amount) === 0)) { window.alert("Enter an amount (negative for a credit or refund)."); return; }
+    if (kind === "extra" && !month) { window.alert("Choose the month."); return; }
+    if (kind === "recurring" && !fromMonth) { window.alert("Choose the month it starts."); return; }
+    if (kind === "recurring" && toMonth && toMonth < fromMonth) { window.alert('"To" month must be the same as or after the "From" month.'); return; }
+    if (category === "other" && !note.trim()) { window.alert('A note is required when the category is "Other".'); return; }
+    const row = {
+      kind, category, department, amount: Number(amount), note: note.trim() || null,
+      month: kind === "extra" ? month : null, from_month: kind === "recurring" ? fromMonth : null, to_month: kind === "recurring" ? (toMonth || null) : null,
+    };
+    const { error } = editingId ? await supabase.from("operating_expenses").update(row).eq("id", editingId) : await supabase.from("operating_expenses").insert(row);
+    if (error) { window.alert(`Couldn't save expense: ${error.message}`); return; }
+    await refetchOpex();
+    setModal(false);
+  }
+  async function remove(x) {
+    if (!window.confirm(`Delete this ${OPEX_LABELS[x.category] || x.category} expense?`)) return;
+    await supabase.from("operating_expenses").delete().eq("id", x.id);
+    refetchOpex();
+  }
+  function exportOpex() {
+    exportToExcel(`operating-expenses-${toKey(TODAY)}.xlsx`, [
+      { name: "By category", rows: OPEX_DISPLAY_CATEGORIES.map((k) => ({ Category: OPEX_LABELS[k], "Amount (€)": Number(accrued.byCategory[k].toFixed(2)) })).concat([{ Category: "Total", "Amount (€)": Number(accrued.total.toFixed(2)) }]) },
+      { name: "Entries", rows: periodEntries.map((x) => ({ Type: x.kind === "recurring" ? "Recurring" : "Extra", From: x.kind === "recurring" ? x.fromMonth : x.month, To: x.kind === "recurring" ? (x.toMonth || "open") : x.month, Category: OPEX_LABELS[x.category] || x.category, Department: opexDepartmentLabel(x.department), "Amount (€/month)": x.amount, Note: x.note })) },
+    ]);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Operating Expenses" sub="Other operating expenses — insurance, accounting software, bank charges, equipment depreciation, AI costs, business development. Gross profit minus these gives operating profit."
+        right={<div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" onClick={exportOpex}>Export Excel</Btn>
+          <Btn variant="secondary" icon={Plus} onClick={() => openNew("extra")}>Add extra</Btn>
+          <Btn icon={Plus} onClick={() => openNew("recurring")}>Add recurring expense</Btn>
+        </div>} />
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>
+          Recurring expenses run from a start month to an end month or open-ended; extras are one-off amounts for a single month (negative = credit or refund). Everything is accrued to the reporting period, like rental expenses. Pick a department to attribute the cost, or "General" for company-wide costs.
+        </div>
+        <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
+      </Panel>
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        {OPEX_DISPLAY_CATEGORIES.map((k) => <StatCard key={k} label={OPEX_LABELS[k].split(" (")[0]} value={fmtEur(accrued.byCategory[k])} sub={k === "rental" ? "From the Rental page" : "This period"} />)}
+        <StatCard label="Total operating expenses" value={fmtEur(accrued.total)} accent={C.accent} sub="Deducted from gross profit" />
+      </div>
+      <Panel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Expenses applying to this period</div>
+          <select style={{ ...inputStyle, width: 280 }} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+            <option value="all">All categories</option>
+            {OPEX_CATEGORIES.map((k) => <option key={k} value={k}>{OPEX_LABELS[k]}</option>)}
+          </select>
+        </div>
+        {periodEntries.length === 0 ? <EmptyState icon={Euro} title="No operating expenses booked for these months" sub="Add a recurring expense or an extra to start." /> : (
+          <TableShell headers={["Type", "Period", "Category", "Department", "Amount / month", "Note", ""]}>
+            {periodEntries.map((x) => (
+              <tr key={x.id}>
+                <Td><Badge tone={x.kind === "recurring" ? "accent" : "warn"}>{x.kind === "recurring" ? "Recurring" : "Extra"}</Badge></Td>
+                <Td mono>{whenLabel(x)}</Td>
+                <Td>{OPEX_LABELS[x.category] || x.category}</Td>
+                <Td style={{ color: C.inkMuted }}>{opexDepartmentLabel(x.department)}</Td>
+                <Td mono style={{ color: x.amount < 0 ? C.accentDark : undefined }}>{fmtEur(x.amount)}{x.amount < 0 ? " (credit)" : ""}</Td>
+                <Td style={{ color: C.inkMuted }}>{x.note || "—"}</Td>
+                <Td right>
+                  <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                    <button onClick={() => openEdit(x)} style={iconBtnStyle} title="Edit"><Pencil size={13} color={C.inkMuted} /></button>
+                    <button onClick={() => remove(x)} style={iconBtnStyle} title="Delete"><Trash2 size={13} color={C.inkMuted} /></button>
+                  </div>
+                </Td>
+              </tr>
+            ))}
+          </TableShell>
+        )}
+      </Panel>
+      {modal && (
+        <Modal title={editingId ? "Edit operating expense" : "Add operating expense"} onClose={() => setModal(false)} width={440}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+              {Object.keys(RENTAL_EXPENSE_KINDS).map((k) => (
+                <button key={k} type="button" onClick={() => setKind(k)} style={{ flex: 1, padding: "8px 10px", fontSize: 12.5, fontFamily: sans, fontWeight: 600, border: "none", cursor: "pointer", background: kind === k ? C.accent : C.surface, color: kind === k ? "#fff" : C.inkMuted }}>{RENTAL_EXPENSE_KINDS[k]}</button>
+              ))}
+            </div>
+            <Field label="Category">
+              <select style={inputStyle} value={category} onChange={(e) => setCategory(e.target.value)}>{OPEX_CATEGORIES.map((k) => <option key={k} value={k}>{OPEX_LABELS[k]}</option>)}</select>
+            </Field>
+            <Field label="Allocated to">
+              <select style={inputStyle} value={department} onChange={(e) => setDepartment(e.target.value)}>
+                <option value={OPEX_GENERAL}>{opexDepartmentLabel(OPEX_GENERAL)}</option>
+                {DEPARTMENTS.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+              </select>
+            </Field>
+            {kind === "extra" ? (
+              <Field label="Month"><input type="month" style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)} /></Field>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="From month"><input type="month" style={inputStyle} value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} /></Field>
+                <Field label="To month (empty = open-ended)"><input type="month" style={inputStyle} value={toMonth} onChange={(e) => setToMonth(e.target.value)} /></Field>
+              </div>
+            )}
+            <Field label={kind === "recurring" ? "Amount per month (€)" : "Amount (€) — negative for a credit or refund"}>
+              <input type="number" min={kind === "recurring" ? "0" : undefined} style={inputStyle} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={kind === "recurring" ? "e.g. 85" : "e.g. 240 or -50"} autoFocus />
+            </Field>
+            <Field label={category === "other" ? "Note (required)" : "Note (optional)"}>
+              <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Annual office insurance, split monthly" />
+            </Field>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+              <Btn variant="secondary" onClick={() => setModal(false)}>Cancel</Btn>
+              <Btn onClick={save}>{editingId ? "Save changes" : "Add expense"}</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Admin: Report builder — pick a dimension, get revenue/cost/profit      */
 /* ---------------------------------------------------------------------- */
@@ -4631,7 +4856,7 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
       });
     const rentalExp = includeRental ? rentalExpensesForRange(rentalExpenses, rStart, rEnd) : { total: 0, byCategory: emptyByCC() };
     const totalLaborCost = byEmployee.reduce((s, e) => s + e.cost, 0);
-    const totalCost = totalLaborCost + rentalExp.total;
+    const totalCost = totalLaborCost; // rental expenses are operating expenses, below gross profit
     const revenueByCC = emptyByCC();
     byClient.forEach((c) => { Object.keys(revenueByCC).forEach((cc) => { revenueByCC[cc] += c.revenueByCostCenter?.[cc] || 0; }); });
     employeeCosts.forEach((ec) => {
@@ -4639,11 +4864,10 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
       ec.byCostCenter = employeeCostByCostCenter(emp, ec.cost, ec.entries, revenueByCC);
     });
     const costByDepartment = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, 0]));
-    costByDepartment.rental += rentalExp.total;
     employeeCosts.forEach((ec) => { costByDepartment[ec.department] = (costByDepartment[ec.department] || 0) + ec.cost; });
     const byCostCenter = [...COST_CENTERS, UNALLOCATED].map((cc) => {
       const revenue = revenueByCC[cc] || 0;
-      const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0) + (cc === "rental" ? rentalExp.total : 0);
+      const cost = employeeCosts.reduce((s, ec) => s + (ec.byCostCenter?.[cc] || 0), 0);
       const hours = CATEGORIES.includes(cc) ? rangeEntries.filter((e) => !e.activity && e.category === cc).reduce((s, e) => s + e.hours, 0) : null;
       const profit = revenue - cost;
       return { key: cc, label: costCenterLabel(cc), hours, revenue, cost, profit, margin: revenue > 0 ? (profit / revenue) * 100 : null };
@@ -5662,6 +5886,80 @@ function TasksPage({ user, mode, tasks, clients, employees, notes, refetchTasks,
 /* Client card — Fees & hours tab (the single place for billing terms)     */
 /* ---------------------------------------------------------------------- */
 
+// One-off / yearly service fee on the client card (annual accounts + income
+// tax return, or start-up & business formation). "Applicable" switches it on;
+// "Post to revenue" creates the matching extra fee so it flows into revenue,
+// profitability and the billing monitor. Saving afterwards keeps that extra
+// fee in sync; switching it off offers to remove it.
+function OneOffServiceCard({ client, kind, title, hint, notePrefix, extras, refetchClients }) {
+  const K = (suffix) => client[`${kind}${suffix}`];
+  const col = (c) => `${kind}_fee_${c}`;
+  const [enabled, setEnabled] = useState(!!K("FeeEnabled"));
+  const [amount, setAmount] = useState(K("Fee") ?? "");
+  const [month, setMonth] = useState(K("FeeMonth") || toKey(TODAY).slice(0, 7));
+  const [cc, setCc] = useState(K("FeeCc"));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setEnabled(!!client[`${kind}FeeEnabled`]); setAmount(client[`${kind}Fee`] ?? ""); setMonth(client[`${kind}FeeMonth`] || toKey(TODAY).slice(0, 7)); setCc(client[`${kind}FeeCc`]);
+  }, [client.id, client[`${kind}FeeEnabled`], client[`${kind}Fee`], client[`${kind}FeeMonth`], client[`${kind}FeeCc`], client[`${kind}FeeExtraId`]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const linked = extras.find((x) => x.id === K("FeeExtraId")) || null;
+  const note = `${notePrefix} — ${client.name}`;
+  async function save() {
+    if (enabled && (!amount || Number(amount) <= 0 || !month)) { window.alert("Enter the amount (greater than zero) and the month."); return; }
+    setBusy(true);
+    try {
+      let extraId = K("FeeExtraId");
+      if (linked && enabled) {
+        const { error } = await supabase.from("client_extra_fees").update({ month, amount: Number(amount), cost_center: cc, note }).eq("id", linked.id);
+        if (error) { window.alert(`Couldn't update the revenue entry: ${error.message}`); return; }
+      }
+      if (linked && !enabled) {
+        if (!window.confirm(`Also remove the ${fmtEur(linked.amount)} entry (${linked.month}) from revenue?`)) return;
+        await supabase.from("client_extra_fees").delete().eq("id", linked.id);
+        extraId = null;
+      }
+      const { error } = await supabase.from("clients").update({ [col("enabled")]: enabled, [`${kind}_fee`]: amount ? Number(amount) : null, [col("month")]: month || null, [col("cc")]: cc, [col("extra_id")]: extraId }).eq("id", client.id);
+      if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+      await refetchClients();
+    } finally { setBusy(false); }
+  }
+  async function post() {
+    if (!enabled || !amount || Number(amount) <= 0 || !month) { window.alert("Switch it on and enter the amount and month first."); return; }
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.from("client_extra_fees").insert({ client_id: client.id, month, amount: Number(amount), cost_center: cc, note }).select().single();
+      if (error || !data) { window.alert(`Couldn't post to revenue: ${error ? error.message : "unknown error"}`); return; }
+      const { error: e2 } = await supabase.from("clients").update({ [col("enabled")]: true, [`${kind}_fee`]: Number(amount), [col("month")]: month, [col("cc")]: cc, [col("extra_id")]: data.id }).eq("id", client.id);
+      if (e2) { window.alert(`Posted, but couldn't link it: ${e2.message}`); }
+      await refetchClients();
+    } finally { setBusy(false); }
+  }
+  return (
+    <div style={{ border: `1px solid ${enabled ? C.accent : C.border}`, borderRadius: 8, padding: 14, background: enabled ? C.accentSoft : undefined }}>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontWeight: 700, fontSize: 13.5, color: C.ink, cursor: "pointer" }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        {title} — applicable
+      </label>
+      <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, margin: "4px 0 10px" }}>{hint}</div>
+      {enabled && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          <Field label="Fee (€)"><input type="number" min="0" style={inputStyle} value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+          <Field label="Month billed"><input type="month" style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)} /></Field>
+          <Field label="Cost center">
+            <select style={inputStyle} value={cc} onChange={(e) => setCc(e.target.value)}>{COST_CENTERS.map((c) => <option key={c} value={c}>{COST_CENTER_LABELS[c]}</option>)}</select>
+          </Field>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+        <Btn size="sm" onClick={save} disabled={busy}>Save</Btn>
+        {enabled && !linked && <Btn size="sm" variant="secondary" onClick={post} disabled={busy}>Post to revenue</Btn>}
+        {linked && <span style={{ fontFamily: sans, fontSize: 12, color: C.accent, fontWeight: 600 }}>✓ In revenue: {fmtEur(linked.amount)} · {linked.month} · {COST_CENTER_LABELS[linked.costCenter] || linked.costCenter}</span>}
+        {!linked && enabled && <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Not in revenue / billing yet</span>}
+      </div>
+    </div>
+  );
+}
+
 function ClientFeesTab({ client, entries, employees, refetchClients }) {
   const [viewPeriod, setViewPeriod] = useState("month");
   const [viewAnchor, setViewAnchor] = useState(TODAY);
@@ -5743,6 +6041,14 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
 
   return (
     <div>
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Annual & start-up services</div>
+        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Switch on only what applies to this client. "Post to revenue" adds the fee as an extra fee, so it appears in revenue, profitability and the billing monitor.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <OneOffServiceCard client={client} kind="annual" title="Annual fee" hint="Annual financial statements (ισολογισμός) and income tax return (δήλωση φορολογίας εισοδήματος)." notePrefix="Annual fee: financial statements & income tax return" extras={client.extraFeeEntries || []} refetchClients={refetchClients} />
+          <OneOffServiceCard client={client} kind="formation" title="Start-up & business formation" hint="Start-up work (έναρξη) and business formation: ΥΜΣ, registrations, bank, ΕΦΚΑ, ΓΕΜΗ." notePrefix="Start-up & business formation" extras={client.extraFeeEntries || []} refetchClients={refetchClients} />
+        </div>
+      </Panel>
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 18, alignItems: "start" }}>
         <Panel>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>{editingHistId ? "Edit fee terms" : "Fee terms"}</div>
@@ -6619,6 +6925,9 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     const includeFormation = window.confirm("Is this a newly formed company?\n\nOK = also create the company formation tasks (ΥΜΣ, μισθωτήριο έδρας, τράπεζα, ΕΦΚΑ, κεφάλαιο, ΓΕΜΗ…).\nCancel = existing company, setup tasks only.");
     if (await startOnboarding(client, templates, tasks, user, { includeFormation })) { await refetchTasks(); await refetchClients(); setTab("tasks"); }
   }
+  async function addFormationTasks() {
+    if (await startOnboarding(client, templates, tasks, user, { includeFormation: true })) { await refetchTasks(); await refetchClients(); setTab("tasks"); }
+  }
   async function markGoLive() {
     if (!progress.complete && !window.confirm(`${progress.total - progress.done} onboarding task(s) are still open. Mark the client as live anyway?`)) return;
     await setLifecycle("live");
@@ -6662,6 +6971,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               {progress.total === 0 && <Btn size="sm" variant="secondary" onClick={beginOnboarding}>Create checklist tasks</Btn>}
+              {progress.total > 0 && !progress.list.some((t) => t.stage === "formation") && <Btn size="sm" variant="secondary" onClick={addFormationTasks}>Add formation tasks</Btn>}
               <Btn size="sm" variant="ghost" onClick={() => setTab("tasks")}>Open tasks</Btn>
             </div>
           </div>
@@ -7243,6 +7553,7 @@ export default function App() {
   const [leaveRequests, refetchLeaveRequests, leaveLoading] = useTable("leave_requests", mapLeaveRequest);
   const [rentalProperties, refetchRentalPropertiesRaw, rentalPropsLoading] = useTable("rental_properties", mapRentalProperty, "name");
   const [rentalExpenses, refetchRentalExpensesRaw, rentalExpLoading] = useTable("rental_expenses", mapRentalExpense);
+  const [operatingExpenses, refetchOpex, opexLoading] = useTable("operating_expenses", mapOpex);
   const refetchRental = useCallback(async () => { await Promise.all([refetchRentalPropertiesRaw(), refetchRentalExpensesRaw()]); }, [refetchRentalPropertiesRaw, refetchRentalExpensesRaw]);
   const [billingStatuses, refetchBilling, billingLoading] = useTable("billing_status", mapBillingStatus);
   const [contacts, refetchContacts, contactsLoading] = useTable("client_contacts", mapContact, "name");
@@ -7319,7 +7630,7 @@ export default function App() {
   if (!session) return <AuthScreen />;
   if (profilesLoading || !user) return <LoadingScreen text="Setting up your account…" />;
   if (!user.active) return <LoadingScreen text="This account has been deactivated. Contact your manager." />;
-  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || billingLoading || contactsLoading || notesLoading || tasksLoading || templatesLoading || amlLoading || ubosLoading || documentsLoading || amlCasesLoading || requestsLoading || view === null) return <LoadingScreen />;
+  if (costHistoryLoading || clientsLoading || feeHistoryLoading || extraFeesLoading || entriesLoading || lockedLoading || leaveLoading || rentalPropsLoading || rentalExpLoading || opexLoading || billingLoading || contactsLoading || notesLoading || tasksLoading || templatesLoading || amlLoading || ubosLoading || documentsLoading || amlCasesLoading || requestsLoading || view === null) return <LoadingScreen />;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: C.bg, fontFamily: sans }}>
@@ -7339,7 +7650,7 @@ export default function App() {
           <TeamCalendar employees={employees} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "dashboard" && (
-          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates}
+          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} operatingExpenses={operatingExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates}
             complianceAlerts={amlAlerts({ clients, amlRecords, cases: amlCases, requests: authorityRequests, amlFirm, employees })} onOpenCompliance={() => setView("compliance")}
             billingStatuses={billingStatuses} onOpenBilling={() => setView("billing")} amlRecords={amlRecords} />
         )}
@@ -7366,6 +7677,9 @@ export default function App() {
         )}
         {user.role === "admin" && view === "rental" && (
           <AdminRental properties={rentalProperties} expenses={rentalExpenses} refetchRental={refetchRental} />
+        )}
+        {user.role === "admin" && view === "opex" && (
+          <AdminOpex expenses={operatingExpenses} refetchOpex={refetchOpex} rentalExpenses={rentalExpenses} />
         )}
         {user.role === "admin" && view === "reports" && (
           <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
