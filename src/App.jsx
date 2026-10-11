@@ -1217,7 +1217,7 @@ const fmtBytes = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : n > 102
 const escapeHtml = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 // Opens a print window with the given HTML so the user can "Save as PDF".
 // No extra library needed; every browser prints to PDF.
-function printHtml(title, bodyHtml, { draft = false } = {}) {
+function printHtml(title, bodyHtml, { draft = false, editable = false } = {}) {
   const w = window.open("", "_blank");
   if (!w) { window.alert("Allow pop-ups for this site to print / save as PDF."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
@@ -1232,11 +1232,11 @@ function printHtml(title, bodyHtml, { draft = false } = {}) {
     @media print { .noprint { display: none; } }
   </style></head><body>
   ${draft ? '<div class="stamp">DRAFT</div>' : ""}
-  <div class="noprint" style="margin-bottom:14px;font-family:sans-serif;font-size:12px;color:#555">Use your browser's Print and choose "Save as PDF". <button onclick="window.print()">Print / Save as PDF</button></div>
-  ${bodyHtml}
+  <div class="noprint" style="margin-bottom:14px;font-family:sans-serif;font-size:12px;color:#555">${editable ? "<strong>Μπορείτε να πληκτρολογήσετε απευθείας πάνω στο έντυπο</strong> για να συμπληρώσετε τα κενά πριν την εκτύπωση. " : ""}Use your browser's Print and choose "Save as PDF". <button onclick="window.print()">Print / Save as PDF</button></div>
+  <div${editable ? ' contenteditable="true" style="outline:none"' : ""}>${bodyHtml}</div>
   </body></html>`);
   w.document.close();
-  setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* user can press the button */ } }, 400);
+  if (!editable) setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* user can press the button */ } }, 400);
 }
 const mapTemplate = (r) => ({ id: r.id, stage: r.stage || "setup", sortOrder: Number(r.sort_order) || 0, title: r.title, description: r.description || "", dueDays: Number(r.due_days) || 0, active: r.active !== false, appliesTo: r.applies_to || "all" });
 const mapAml = (r) => ({
@@ -6250,8 +6250,8 @@ function ClientDocumentsTab({ user, client, documents, employees, refetchDocumen
     <Panel>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
         <span style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted }}>Templates (pre-filled from the client card):</span>
-        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`Εξουσιοδότηση — ${client.name}`, buildAuthorisationHtml({ client, aml, firm, contacts }))}>Εξουσιοδότηση ΑΑΔΕ</Btn>
-        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml, ubos, firm }))}>KYC questionnaire</Btn>
+        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`Εξουσιοδότηση — ${client.name}`, buildAuthorisationHtml({ client, aml, firm, contacts }), { editable: true })}>Εξουσιοδότηση ΑΑΔΕ</Btn>
+        <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml, ubos, firm }), { editable: true })}>KYC questionnaire</Btn>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
         <Field label="Category for the next upload">
@@ -6938,7 +6938,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
                   {files.map((x) => <div key={x.id} style={{ fontSize: 11.5 }}><button onClick={() => openClientDocument(x)} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 11.5, color: C.accentDark, textDecoration: "underline" }}>{x.fileName}</button> <span style={{ color: C.inkFaint }}>{x.uploadedAt.slice(0, 10)}</span></div>)}
                 </span>
                 <input type="date" style={{ ...inputStyle, width: 140, padding: "4px 6px", fontSize: 12 }} value={st.date || ""} onChange={(e) => setDoc(d.key, { date: e.target.value })} disabled={!st.collected} />
-                {d.key === "kyc_form" && <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml: { ...(aml || {}), ...f }, ubos }))}>Print KYC form</Btn>}
+                {d.key === "kyc_form" && <Btn variant="secondary" icon={Receipt} onClick={() => printHtml(`KYC — ${client.name}`, buildKycQuestionnaireHtml({ client, aml: { ...(aml || {}), ...f }, ubos }), { editable: true })}>Print KYC form</Btn>}
                 <UploadButton label={files.length ? "Upload another" : "Upload"} onFile={async (file) => { if (await uploadClientDocument(client, file, d.key, "", user)) { setDoc(d.key, { collected: true, date: st.date || toKey(TODAY) }); refetchDocuments && refetchDocuments(); } }} />
               </div>
             );
