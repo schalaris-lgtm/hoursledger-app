@@ -1194,7 +1194,7 @@ const mapClientRow = (r) => ({
   contractServicesText: r.contract_services_text || "", contractPayrollBaseFee: r.contract_payroll_base_fee === null || r.contract_payroll_base_fee === undefined ? null : Number(r.contract_payroll_base_fee),
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
-  contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null,
+  contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null, contractOtherFeesText: r.contract_other_fees_text || "",
   annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
   formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
 });
@@ -6261,14 +6261,28 @@ function buildAgreementHtml({ client, aml, firm, employees, contacts }) {
   const services = (client.contractServicesText || CONTRACT_DEFAULT_SERVICES).split("\n").map((l) => l.trim()).filter(Boolean);
   const e = escapeHtml;
   let n = 0; const art = (title) => `<h2>Άρθρο ${++n} – ${e(title)}</h2>`;
+  let sub = 1; // 2.1 is the main service; the blocks below continue 2.2, 2.3, …
+  const subHead = (title) => `<h3>2.${++sub} ${title}</h3>`;
   const payroll = client.contractPayrollBaseFee ? `
-    <h3>2.2 Μισθοδοσία &amp; Εργατικά Θέματα</h3>
+    ${subHead("Μισθοδοσία &amp; Εργατικά Θέματα")}
     <ul><li>Ενεργοποίηση module μισθοδοσίας και διαχείριση των ${client.contractPayrollIncluded || 2} πρώτων υπαλλήλων: ${e(fmtEurGr(client.contractPayrollBaseFee))} μηνιαίως πλέον ΦΠΑ.</li>
     ${client.contractPayrollExtraFee ? `<li>Κάθε επιπλέον υπάλληλος: ${e(fmtEurGr(client.contractPayrollExtraFee))} ανά άτομο μηνιαίως πλέον ΦΠΑ.</li>` : ""}</ul>` : "";
+  // Annual work and start-up fees come from the client card (Fees tab), when switched on there.
+  const annual = client.annualFeeEnabled && client.annualFee ? `
+    ${subHead("Ετήσιες Εργασίες")}
+    <p>Για την κατάρτιση των ετήσιων οικονομικών καταστάσεων (ισολογισμού) και την υποβολή της δήλωσης φορολογίας εισοδήματος:</p>
+    <p><strong>Αμοιβή:</strong> ${e(fmtEurGr(client.annualFee))} ετησίως πλέον ΦΠΑ 24%.</p>` : "";
+  const formation = client.formationFeeEnabled && client.formationFee ? `
+    ${subHead("Εργασίες Έναρξης &amp; Σύστασης Επιχείρησης")}
+    <p>Για τις εργασίες έναρξης δραστηριότητας και σύστασης της επιχείρησης (ενδεικτικά: υπηρεσία μιας στάσης, μισθωτήριο έδρας και υποβολή στην ΑΑΔΕ, εγγραφή στον ΕΦΚΑ, τραπεζικός λογαριασμός, ΓΕΜΗ, ηλεκτρονική τιμολόγηση):</p>
+    <p><strong>Αμοιβή:</strong> ${e(fmtEurGr(client.formationFee))} εφάπαξ πλέον ΦΠΑ 24%.</p>` : "";
   const adhoc = client.contractHourlyRate ? `
-    <h3>2.${payroll ? 3 : 2} Πρόσθετες Υπηρεσίες (ad-hoc)</h3>
+    ${subHead("Πρόσθετες Υπηρεσίες (ad-hoc)")}
     <p>Για τυχόν εργασίες πέραν των ανωτέρω (π.χ. τροποποιήσεις καταστατικού κ.λπ.), ισχύει η παρακάτω χρέωση:</p>
     <p><strong>Χρέωση:</strong> ${e(fmtEurGr(client.contractHourlyRate))} ανά ώρα (gross rate) πλέον ΦΠΑ.</p>` : "";
+  const otherFees = (client.contractOtherFeesText || "").trim() ? `
+    ${subHead("Λοιπές Χρεώσεις &amp; Διευκρινίσεις")}
+    <p>${e(client.contractOtherFeesText.trim()).replace(/\n/g, "<br/>")}</p>` : "";
   const notice = client.contractNoticeMonths ?? 3;
   const noticeText = notice === 1 ? "μηνιαία" : notice === 2 ? "δίμηνη" : notice === 3 ? "τρίμηνη" : notice === 6 ? "εξάμηνη" : `${notice} μηνών`;
   return `
@@ -6285,7 +6299,7 @@ function buildAgreementHtml({ client, aml, firm, employees, contacts }) {
   <h3>2.1 Λογιστική – Φορολογική – Οικονομική Υποστήριξη</h3>
   <ul>${services.map((sv) => `<li>${e(sv)}</li>`).join("")}</ul>
   <p><strong>Αμοιβή:</strong> ${cur.fixedFee ? `${e(fmtEurGr(cur.fixedFee))} μηνιαίως πλέον ΦΠΑ 24%.` : "[ΠΟΣΟ] μηνιαίως πλέον ΦΠΑ 24%."}</p>
-  ${payroll}${adhoc}
+  ${payroll}${annual}${formation}${adhoc}${otherFees}
   <p>Σε περίπτωση μεταβολής των παρεχόμενων υπηρεσιών η σύμβαση θα τροποποιηθεί αναλόγως.</p>
   ${art("Οικονομικοί Όροι")}
   <p>${e(client.contractPaymentTerms || CONTRACT_DEFAULT_PAYMENT)}</p>
@@ -6326,7 +6340,7 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
   const fromClient = () => ({
     special: client.contractSpecialTerms || "", payment: client.contractPaymentTerms || "", servicesText: client.contractServicesText || CONTRACT_DEFAULT_SERVICES,
     payrollBase: client.contractPayrollBaseFee ?? "", payrollIncluded: client.contractPayrollIncluded ?? "", payrollExtra: client.contractPayrollExtraFee ?? "",
-    hourlyRate: client.contractHourlyRate ?? "", noticeMonths: client.contractNoticeMonths ?? 3, includeAml: client.contractIncludeAml !== false, startDate: client.contractStartDate || earliestHistoryDate(client.feeHistory) || "",
+    hourlyRate: client.contractHourlyRate ?? "", otherFees: client.contractOtherFeesText || "", noticeMonths: client.contractNoticeMonths ?? 3, includeAml: client.contractIncludeAml !== false, startDate: client.contractStartDate || earliestHistoryDate(client.feeHistory) || "",
   });
   const [t, setT] = useState(fromClient);
   const [firmEdit, setFirmEdit] = useState(null);
@@ -6336,10 +6350,10 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
   const num = (v) => v === "" || v === null || v === undefined ? null : Number(v);
   const termsPatch = () => ({
     contract_special_terms: t.special.trim() || null, contract_payment_terms: t.payment.trim() || null, contract_services_text: t.servicesText.trim() === CONTRACT_DEFAULT_SERVICES.trim() ? null : (t.servicesText.trim() || null),
-    contract_payroll_base_fee: num(t.payrollBase), contract_payroll_included: num(t.payrollIncluded), contract_payroll_extra_fee: num(t.payrollExtra), contract_hourly_rate: num(t.hourlyRate),
+    contract_payroll_base_fee: num(t.payrollBase), contract_payroll_included: num(t.payrollIncluded), contract_payroll_extra_fee: num(t.payrollExtra), contract_hourly_rate: num(t.hourlyRate), contract_other_fees_text: t.otherFees.trim() || null,
     contract_notice_months: num(t.noticeMonths), contract_include_aml: !!t.includeAml, contract_start_date: t.startDate || null,
   });
-  const previewClient = { ...client, contractSpecialTerms: t.special, contractPaymentTerms: t.payment, contractServicesText: t.servicesText, contractPayrollBaseFee: num(t.payrollBase), contractPayrollIncluded: num(t.payrollIncluded), contractPayrollExtraFee: num(t.payrollExtra), contractHourlyRate: num(t.hourlyRate), contractNoticeMonths: num(t.noticeMonths), contractIncludeAml: !!t.includeAml, contractStartDate: t.startDate || null };
+  const previewClient = { ...client, contractSpecialTerms: t.special, contractPaymentTerms: t.payment, contractServicesText: t.servicesText, contractPayrollBaseFee: num(t.payrollBase), contractPayrollIncluded: num(t.payrollIncluded), contractPayrollExtraFee: num(t.payrollExtra), contractHourlyRate: num(t.hourlyRate), contractOtherFeesText: t.otherFees, contractNoticeMonths: num(t.noticeMonths), contractIncludeAml: !!t.includeAml, contractStartDate: t.startDate || null };
   const signedDocs = documents.filter((d) => d.category === "contract");
   const cur = currentFeeOf(client);
   const missing = [];
@@ -6389,6 +6403,10 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
           <Field label="2.2 Employees included"><input type="number" min="0" style={inputStyle} value={t.payrollIncluded} onChange={(e) => setT({ ...t, payrollIncluded: e.target.value })} placeholder="e.g. 2" /></Field>
           <Field label="2.2 Each extra employee (€/month)"><input type="number" min="0" style={inputStyle} value={t.payrollExtra} onChange={(e) => setT({ ...t, payrollExtra: e.target.value })} placeholder="e.g. 15" /></Field>
           <Field label="2.3 Ad-hoc hourly rate (€, empty = no ad-hoc article)"><input type="number" min="0" style={inputStyle} value={t.hourlyRate} onChange={(e) => setT({ ...t, hourlyRate: e.target.value })} placeholder="e.g. 50" /></Field>
+          <Field label="Annual fee (from Fees tab)"><input style={{ ...inputStyle, background: C.bg }} value={client.annualFeeEnabled && client.annualFee ? fmtEurGr(client.annualFee) + " ετησίως πλέον ΦΠΑ" : "Not applicable — switch on in Fees"} readOnly /></Field>
+          <Field label="Start-up & formation fee (from Fees tab)"><input style={{ ...inputStyle, background: C.bg }} value={client.formationFeeEnabled && client.formationFee ? fmtEurGr(client.formationFee) + " εφάπαξ πλέον ΦΠΑ" : "Not applicable — switch on in Fees"} readOnly /></Field>
+          <div />
+          <div style={{ gridColumn: "1 / span 3" }}><Field label="Other charges & clarifications (free text — added as its own sub-article of Άρθρο 2)"><textarea style={{ ...textareaStyle, minHeight: 70 }} value={t.otherFees} onChange={(e) => setT({ ...t, otherFees: e.target.value })} placeholder="e.g. Χρέωση για υποβολή δήλωσης ΦΠΑ εκτός προθεσμίας, έξοδα ταχυμεταφοράς, εξαιρούμενες υπηρεσίες…" /></Field></div>
           <div style={{ gridColumn: "2 / span 2" }}><Field label="Άρθρο 3 — invoicing & payment terms (empty = template clause)"><input style={inputStyle} value={t.payment} onChange={(e) => setT({ ...t, payment: e.target.value })} placeholder={CONTRACT_DEFAULT_PAYMENT} /></Field></div>
           <div style={{ gridColumn: "1 / span 3" }}><Field label="Special terms (optional — added as a separate article)"><textarea style={{ ...textareaStyle, minHeight: 70 }} value={t.special} onChange={(e) => setT({ ...t, special: e.target.value })} /></Field></div>
           <label style={{ gridColumn: "1 / span 3", display: "flex", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 12.5, color: C.ink }}><input type="checkbox" checked={!!t.includeAml} onChange={(e) => setT({ ...t, includeAml: e.target.checked })} /> Include the due-diligence article (ν. 4557/2018) — recommended by the compliance guide</label>
