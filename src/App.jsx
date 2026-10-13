@@ -1633,7 +1633,7 @@ function exportToExcel(filename, sheets) {
 /* Employee Timesheet view                                                 */
 /* ---------------------------------------------------------------------- */
 
-function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks, refetchLockedWeeks }) {
+function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks, refetchLockedWeeks, leaveRequests = [] }) {
   const [weekStart, setWeekStart] = useState(startOfWeek(TODAY));
   const [form, setForm] = useState({ date: toKey(TODAY), clientId: clients.find((c) => c.active)?.id || "", category: "accounting", hours: "", note: "" });
   const [editingId, setEditingId] = useState(null);
@@ -1668,7 +1668,17 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
 
   const weekTotal = weekEntries.reduce((s, e) => s + e.hours, 0);
   const monthTotal = monthEntries.reduce((s, e) => s + e.hours, 0);
-  const weeklyTarget = user.weeklyHours || 40;
+  // Leave from the Time Off module is shown on the day (no hours are created). Approved leave on a working day lowers the week's target.
+  const myLeave = leaveRequests.filter((r) => r.employeeId === user.id && r.status !== "rejected");
+  const weekHolidays = holidayMapForYears([weekStart.getFullYear(), addDays(weekStart, 6).getFullYear()]);
+  const leaveOnDay = (key) => {
+    const hits = myLeave.filter((r) => r.startDate <= key && key <= r.endDate);
+    return hits.find((r) => r.status === "approved") || hits[0] || null;
+  };
+  const isWorkingDay = (d) => !isWeekend(d) && !weekHolidays.has(toKey(d));
+  const approvedLeaveDays = days.filter((d) => isWorkingDay(d) && leaveOnDay(toKey(d))?.status === "approved").length;
+  const baseWeeklyTarget = user.weeklyHours || 40;
+  const weeklyTarget = Math.max(0, Math.round(baseWeeklyTarget * (1 - approvedLeaveDays / 5) * 100) / 100);
   const weeklyDiff = weekTotal - weeklyTarget;
   const onTargetWeek = Math.abs(weeklyDiff) < 0.01;
   const weeklyDiffLabel = onTargetWeek ? "On track" : weeklyDiff > 0 ? `+${weeklyDiff.toFixed(2)}h overtime` : `${weeklyDiff.toFixed(2)}h undertime`;
@@ -1724,7 +1734,7 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
 
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <StatCard label="This week" value={weekTotal.toFixed(2) + "h"} accent={C.accent} />
-        <StatCard label={`vs. ${weeklyTarget}h/week target`} value={weeklyDiffLabel} accent={weeklyDiffColor} />
+        <StatCard label={`vs. ${weeklyTarget}h/week target${approvedLeaveDays ? ` (${approvedLeaveDays} leave day${approvedLeaveDays > 1 ? "s" : ""})` : ""}`} value={weeklyDiffLabel} accent={weeklyDiffColor} />
         <StatCard label={fmtMonthYear(weekStart)} value={monthTotal.toFixed(2) + "h"} />
         <StatCard label="Entries this week" value={weekEntries.length} />
       </div>
@@ -1804,13 +1814,16 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
         {days.map((day) => {
           const dayEntries = weekEntries.filter((e) => e.date === toKey(day));
           const dayTotal = dayEntries.reduce((s, e) => s + e.hours, 0);
+          const dayLeave = !isWeekend(day) ? leaveOnDay(toKey(day)) : null;
+          const dayHoliday = weekHolidays.get(toKey(day));
           return (
-            <div key={toKey(day)} style={{ display: "flex", gap: 16, padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
+            <div key={toKey(day)} style={{ display: "flex", gap: 16, padding: "10px 0", borderBottom: `1px solid ${C.border}`, background: dayLeave ? C.accentSoft : "transparent" }}>
               <div style={{ width: 90, flexShrink: 0 }}>
                 <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 600, color: isToday(day) ? C.accent : C.ink }}>
                   {fmtDow(day)} {fmtShort(day)}
                 </div>
                 {isWeekend(day) && <div style={{ fontFamily: sans, fontSize: 10.5, color: C.inkFaint }}>Weekend</div>}
+                {dayHoliday && !isWeekend(day) && <div style={{ fontFamily: sans, fontSize: 10.5, color: C.inkFaint }}>{dayHoliday}</div>}
                 {!isLocked && (
                   <button onClick={() => setForm((f) => ({ ...f, date: toKey(day) }))} title={`Add hours for ${fmtShort(day)}`}
                     style={{ ...iconBtnStyle, padding: 0, marginTop: 4, fontFamily: sans, fontSize: 11, color: form.date === toKey(day) ? C.accent : C.inkFaint, fontWeight: form.date === toKey(day) ? 700 : 500, alignItems: "center", gap: 3 }}>
@@ -1819,8 +1832,14 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
                 )}
               </div>
               <div style={{ flex: 1 }}>
+                {dayLeave && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: dayEntries.length ? 8 : 0 }}>
+                    <Badge tone={dayLeave.status === "approved" ? "accent" : "warn"}>{leaveTypeLabel(dayLeave.type)} · {dayLeave.status === "approved" ? "Approved" : "Pending approval"}</Badge>
+                    {dayEntries.length === 0 && <span style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted }}>On leave</span>}
+                  </div>
+                )}
                 {dayEntries.length === 0 ? (
-                  <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours logged</div>
+                  dayLeave ? null : <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours logged</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {dayEntries.map((e) => (
@@ -7793,7 +7812,7 @@ export default function App() {
       <Sidebar user={user} view={view} setView={setView} />
       <div style={{ flex: 1, padding: "28px 32px", minWidth: 0 }}>
         {view === "timesheet" && (
-          <EmployeeTimesheet user={user} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} />
+          <EmployeeTimesheet user={user} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} leaveRequests={leaveRequests} />
         )}
         {view === "timeoff" && (
           <TimeOff user={user} employees={employees} leaveRequests={leaveRequests} refetchLeaveRequests={refetchLeaveRequests} />
