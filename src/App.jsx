@@ -3150,7 +3150,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
 /* Admin: All timesheets (view + edit any entry)                          */
 /* ---------------------------------------------------------------------- */
 
-function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWeeks, refetchLockedWeeks }) {
+function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWeeks, refetchLockedWeeks, leaveRequests = [] }) {
   const [weekStart, setWeekStart] = useState(startOfWeek(TODAY));
   const [empFilter, setEmpFilter] = useState("all");
   const [clientFilter, setClientFilter] = useState("all");
@@ -3191,11 +3191,17 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const total = rows.reduce((s, e) => s + e.hours, 0);
 
   const weekEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= weekStart && d <= weekEnd; });
+  // Approved leave on a working day (not weekend, not a public holiday) lowers that week's contracted hours.
+  const weekHolidays = holidayMapForYears([weekStart.getFullYear(), weekEnd.getFullYear()]);
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)).filter((d) => !isWeekend(d) && !weekHolidays.has(toKey(d)));
   const compliance = employees.filter((e) => employeeBilledInRange(e, weekStart, weekEnd)).map((e) => {
-    const target = e.weeklyHours || 40;
+    const base = e.weeklyHours || 40;
+    const approved = leaveRequests.filter((r) => r.employeeId === e.id && r.status === "approved");
+    const leaveDays = weekDays.filter((d) => approved.some((r) => r.startDate <= toKey(d) && toKey(d) <= r.endDate)).length;
+    const target = Math.max(0, Math.round(base * (1 - leaveDays / 5) * 100) / 100);
     const logged = weekEntries.filter((t) => t.employeeId === e.id).reduce((s, t) => s + t.hours, 0);
     const diff = logged - target;
-    return { ...e, target, logged, diff };
+    return { ...e, base, leaveDays, target, logged, diff };
   }).sort((a, b) => b.diff - a.diff);
 
   return (
@@ -3207,7 +3213,7 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
           Weekly hours vs. contract
         </div>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
-          {fmtShort(weekStart)} – {fmtShort(weekEnd)}. Each employee's contracted hours are set on the Employees page.
+          {fmtShort(weekStart)} – {fmtShort(weekEnd)}. Contracted hours are set on the Employees page; approved leave days reduce the week's target.
         </div>
         <TableShell headers={["Employee", "Contracted /wk", "Logged", "Difference", "Status"]}>
           {compliance.map((e) => {
@@ -3218,7 +3224,7 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
             return (
               <tr key={e.id}>
                 <Td>{e.name}</Td>
-                <Td mono>{e.target}h</Td>
+                <Td mono>{e.target}h{e.leaveDays > 0 && <span style={{ display: "block", fontFamily: sans, fontSize: 11, color: C.inkMuted }}>{e.base}h − {e.leaveDays} leave day{e.leaveDays > 1 ? "s" : ""}</span>}</Td>
                 <Td mono>{e.logged.toFixed(2)}h</Td>
                 <Td mono>{onTrack ? "—" : `${over ? "+" : ""}${e.diff.toFixed(2)}h`}</Td>
                 <Td><Badge tone={tone}>{label}</Badge></Td>
@@ -7829,7 +7835,7 @@ export default function App() {
             billingStatuses={billingStatuses} onOpenBilling={() => setView("billing")} amlRecords={amlRecords} />
         )}
         {user.role === "admin" && view === "timesheets" && (
-          <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} />
+          <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "clients" && (
           <AdminClients user={user} clients={clients} refetchClients={refetchClients} entries={entries} onOpenCard={openClientCard} tasks={tasks} templates={templates} refetchTasks={refetchTasks} amlRecords={amlRecords} employees={employees} />
