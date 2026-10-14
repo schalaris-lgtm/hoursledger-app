@@ -7192,6 +7192,7 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
 const formFromClient = (c) => ({ name: c.name, afm: c.afm, doy: c.doy, legalForm: c.legalForm, address: c.address, email: c.email, phone: c.phone, accountManagerId: c.accountManagerId || "", generalNotes: c.generalNotes,
   representativeName: c.representativeName, representativeAfm: c.representativeAfm, representativeIdType: c.representativeIdType, representativeIdNumber: c.representativeIdNumber, representativeEmail: c.representativeEmail, representativePhone: c.representativePhone });
 function ClientCard({ user, client, employees, contacts, notes, tasks, entries, templates = [], aml = null, ubos = [], refetchDueDiligence, documents = [], refetchDocuments, firm = DEFAULT_FIRM, saveFirm, initialTab = "details", refetchClients, refetchContacts, refetchNotes, refetchTasks, onBack }) {
+  const [showFlow, setShowFlow] = useState(false);
   const [tab, setTab] = useState(initialTab);
   useEffect(() => { setTab(initialTab); }, [initialTab, client?.id]);
   const [form, setForm] = useState(null);
@@ -7259,7 +7260,6 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     refetchTasks();
   }
 
-  const [showFlow, setShowFlow] = useState(false);
   const progress = onboardingProgress(client, tasks);
   async function setLifecycle(lifecycle) {
     const patch = { lifecycle, go_live_date: lifecycle === "live" ? (client.goLiveDate || toKey(TODAY)) : client.goLiveDate };
