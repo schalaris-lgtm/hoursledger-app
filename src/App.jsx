@@ -2244,7 +2244,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, billingPanel: true, ddPanel: true, compliancePanel: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
-    monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true,
+    monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true, effectiveRateTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
   // Merge with the defaults so panels added later (billing, compliance, tasks…) appear even when a layout was saved earlier.
@@ -2446,6 +2446,27 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     return { ...c, months, totalRevenue: months.reduce((s, m) => s + m.revenue, 0) };
   });
 
+  // Effective rate by client and month (revenue ÷ hours); cost/h allocates each
+  // employee's monthly cost by their share of hours on the client that month.
+  const effRateRows = clientMonthly.map((c) => {
+    let hours = 0, revenue = 0, cost = 0;
+    const cells = trendMonths.map((m, i) => {
+      const monthAll = entries.filter((e) => fromKey(e.date) >= m.start && fromKey(e.date) <= m.end);
+      const cE = monthAll.filter((e) => e.clientId === c.id);
+      let mc = 0;
+      employees.forEach((emp) => {
+        const mine = cE.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
+        if (!mine) return;
+        const all = monthAll.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
+        if (all > 0) mc += periodEmployeeCost(emp, m.start, m.end) * (mine / all);
+      });
+      const h = c.months[i].hours, r = c.months[i].revenue;
+      hours += h; revenue += r; cost += mc;
+      return { hours: h, rate: h > 0 ? r / h : null, costH: h > 0 ? mc / h : null };
+    });
+    return { id: c.id, name: c.name, cells, hours, rate: hours > 0 ? revenue / hours : null, costH: hours > 0 ? cost / hours : null };
+  }).filter((r) => r.hours > 0).sort((a, b) => (a.rate ?? 1e9) - (b.rate ?? 1e9));
+
   // Company-wide monthly overview: new clients added, revenue, cost, profit.
   const companyMonthly = trendMonths.map((m) => {
     // "New" = the month the client's revenue starts (earliest "Effective
@@ -2533,7 +2554,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const CONFIG_LABELS = {
     statCards: "Summary cards", billingPanel: "Billing — outstanding alert", ddPanel: "Due diligence — client files alert", compliancePanel: "AML compliance alerts (firm, reports, authorities)", onboardingPanel: "Pipeline — leads & onboarding", tasksPanel: "Tasks — overdue & due this week", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
     byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
-    monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month",
+    monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month", effectiveRateTable: "Effective rate by client, by month",
     companyMonthlyTable: "Company overview, by month",
   };
 
@@ -2844,8 +2865,9 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
 
       {config.byClientTable && (
         <Panel style={{ marginBottom: 18 }}>
-            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 12 }}>Hours by client</div>
-            <TableShell headers={["Client", "Hours", "Allocation", "Status", "Revenue", "Cost", "Profit", "Margin"]}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 4 }}>Hours by client</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Effective rate = revenue of the period ÷ hours worked for the client. Compare it with cost per hour to see whether the fee covers the time spent.</div>
+            <TableShell headers={["Client", "Hours", "Allocation", "Status", "Revenue", "Effective rate", "Cost", "Cost /h", "Profit", "Margin"]}>
               {byClient.map((c) => {
                 const pct = c.allocation ? (c.hours / c.allocation) * 100 : null;
                 let tone = "neutral", label = "No allocation set";
@@ -2861,7 +2883,9 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                     <Td mono>{c.allocation ? c.allocation.toFixed(1) + "h" : "—"}</Td>
                     <Td><Badge tone={tone}>{label}</Badge></Td>
                     <Td mono>{fmtEur(c.revenue)}</Td>
+                    <Td mono>{c.hours > 0 ? fmtEur(c.revenue / c.hours) + "/h" : "—"}</Td>
                     <Td mono>{fmtEur(c.cost)}</Td>
+                    <Td mono>{c.hours > 0 ? fmtEur(c.cost / c.hours) + "/h" : "—"}</Td>
                     <Td mono style={{ color: c.profit < 0 ? C.danger : undefined }}>{fmtEur(c.profit)}</Td>
                     <Td>{c.margin !== null ? <Badge tone={c.margin < 0 ? "danger" : c.margin < 20 ? "warn" : "accent"}>{c.margin.toFixed(0)}%</Badge> : "—"}</Td>
                   </tr>
@@ -3083,6 +3107,23 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                   <Td>{e.name}</Td>
                   {e.months.map((h, i) => <Td key={i} mono>{h > 0 ? h.toFixed(1) : "—"}</Td>)}
                   <Td mono>{e.months.reduce((s, h) => s + h, 0).toFixed(1)}</Td>
+                </tr>
+              ))}
+            </TableShell>
+          </Panel>
+        )}
+
+        {config.effectiveRateTable && (
+          <Panel style={{ flex: 1, minWidth: 380 }}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Effective rate by client, by month</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Revenue ÷ hours, €/h. Red = below the cost per hour. Sorted from lowest to highest 6-month rate.</div>
+            <TableShell headers={["Client", ...trendMonths.map((m) => m.label), "6-month rate", "Cost /h"]}>
+              {effRateRows.map((r) => (
+                <tr key={r.id}>
+                  <Td>{r.name}</Td>
+                  {r.cells.map((x, i) => <Td key={i} mono style={{ color: x.rate != null && x.costH != null && x.rate < x.costH ? C.danger : undefined }}>{x.rate != null ? "€" + x.rate.toFixed(0) : "—"}</Td>)}
+                  <Td mono style={{ fontWeight: 700, color: r.rate != null && r.costH != null && r.rate < r.costH ? C.danger : undefined }}>{r.rate != null ? "€" + r.rate.toFixed(0) + "/h" : "—"}</Td>
+                  <Td mono>{r.costH != null ? "€" + r.costH.toFixed(0) + "/h" : "—"}</Td>
                 </tr>
               ))}
             </TableShell>
@@ -6065,8 +6106,55 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
   const totalHours = periodEntries.reduce((s, e) => s + e.hours, 0);
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
 
+  // Effective rate by month (last 12 months): revenue ÷ hours worked for this client.
+  // Cost = each employee's monthly cost × their share of hours spent on this client that month.
+  const rateRows = Array.from({ length: 12 }, (_, i) => {
+    const ms = new Date(TODAY.getFullYear(), TODAY.getMonth() - i, 1);
+    const me = endOfMonth(ms);
+    const inMonth = (e) => { const d = fromKey(e.date); return d >= ms && d <= me; };
+    const monthEntries = entries.filter(inMonth);
+    const cEntries = monthEntries.filter((e) => e.clientId === client.id);
+    const hours = cEntries.reduce((s, e) => s + e.hours, 0);
+    const revenue = periodClientMetrics(client, cEntries, ms, me).revenue || 0;
+    let cost = 0;
+    employees.forEach((emp) => {
+      const mine = cEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
+      if (!mine) return;
+      const all = monthEntries.filter((e) => e.employeeId === emp.id).reduce((s, e) => s + e.hours, 0);
+      if (all > 0) cost += periodEmployeeCost(emp, ms, me) * (mine / all);
+    });
+    return { key: toKey(ms).slice(0, 7), hours, revenue, cost, rate: hours > 0 ? revenue / hours : null, costH: hours > 0 ? cost / hours : null };
+  }).filter((r) => r.hours > 0 || r.revenue > 0);
+  const rateTot = rateRows.reduce((a, r) => ({ hours: a.hours + r.hours, revenue: a.revenue + r.revenue, cost: a.cost + r.cost }), { hours: 0, revenue: 0, cost: 0 });
+  const fmtRate = (n) => (n == null ? "—" : "€" + n.toFixed(2));
+
   return (
     <div>
+      <Panel style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Effective rate by month</div>
+        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Effective rate = revenue ÷ hours worked for this client. Compare it with cost/h: if the rate is below cost/h, the client loses money. Last 12 months.</div>
+        {rateRows.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours or revenue yet.</div> : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 12.5 }}>
+            <thead><tr>{["Month", "Hours", "Revenue", "Effective rate", "Cost", "Cost /h", "Profit"].map((h, i) => <th key={h} style={{ textAlign: i ? "right" : "left", padding: "6px 8px", color: C.inkMuted, fontWeight: 600, borderBottom: `1px solid ${C.border || "#ddd"}` }}>{h}</th>)}</tr></thead>
+            <tbody>
+              {[...rateRows, { key: "Total", ...rateTot, rate: rateTot.hours > 0 ? rateTot.revenue / rateTot.hours : null, costH: rateTot.hours > 0 ? rateTot.cost / rateTot.hours : null, total: true }].map((r) => {
+                const profit = r.revenue - r.cost;
+                return (
+                  <tr key={r.key} style={{ fontWeight: r.total ? 700 : 400 }}>
+                    <td style={{ padding: "6px 8px" }}>{r.key}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono }}>{r.hours.toFixed(1)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono }}>{fmtEur(r.revenue)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, color: r.rate != null && r.costH != null && r.rate < r.costH ? C.danger : C.ink }}>{fmtRate(r.rate)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono }}>{fmtEur(r.cost)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono }}>{fmtRate(r.costH)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, color: profit < 0 ? C.danger : C.accent }}>{fmtEur(profit)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Panel>
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Annual & start-up services</div>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Switch on only what applies to this client. "Post to revenue" adds the fee as an extra fee, so it appears in revenue, profitability and the billing monitor.</div>
