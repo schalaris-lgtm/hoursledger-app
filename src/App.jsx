@@ -1189,7 +1189,7 @@ const mapClientRow = (r) => ({
   afm: r.afm || "", doy: r.doy || "", legalForm: r.legal_form || "", address: r.address || "", email: r.email || "", phone: r.phone || "",
   accountManagerId: r.account_manager_id || null, generalNotes: r.general_notes || "",
   representativeName: r.representative_name || "", representativeAfm: r.representative_afm || "", representativeIdType: r.representative_id_type || "", representativeIdNumber: r.representative_id_number || "", representativeEmail: r.representative_email || "", representativePhone: r.representative_phone || "",
-  lifecycle: r.lifecycle || "live", goLiveDate: r.go_live_date || null, leadSource: r.lead_source || "", expectedFee: r.expected_fee === null || r.expected_fee === undefined ? null : Number(r.expected_fee),
+  lifecycle: r.lifecycle || "live", goLiveDate: r.go_live_date || null, engagementDate: r.engagement_date || null, leadSource: r.lead_source || "", expectedFee: r.expected_fee === null || r.expected_fee === undefined ? null : Number(r.expected_fee),
   contractStatus: r.contract_status || "none", contractSignedOn: r.contract_signed_on || null, contractVersion: Number(r.contract_version) || 1, contractSpecialTerms: r.contract_special_terms || "", contractPaymentTerms: r.contract_payment_terms || "",
   contractServicesText: r.contract_services_text || "", contractPayrollBaseFee: r.contract_payroll_base_fee === null || r.contract_payroll_base_fee === undefined ? null : Number(r.contract_payroll_base_fee),
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
@@ -1535,6 +1535,61 @@ function onboardingProgress(client, tasks) {
   const done = list.filter((t) => t.status === "done").length;
   return { list, done, total: list.length, complete: list.length > 0 && done === list.length };
 }
+// Flowchart of the client lifecycle, shown from the ⓘ button on the client card.
+function OnboardingFlowchart() {
+  const box = (x, y, w, h, title, sub, fill, stroke) => (
+    <g>
+      <rect x={x} y={y} width={w} height={h} rx={9} fill={fill || C.surface} stroke={stroke || C.border} strokeWidth="1.5" />
+      <text x={x + w / 2} y={y + (sub ? h / 2 - 5 : h / 2 + 4)} textAnchor="middle" fontFamily={sans} fontSize="12.5" fontWeight="700" fill={C.ink}>{title}</text>
+      {sub && <text x={x + w / 2} y={y + h / 2 + 12} textAnchor="middle" fontFamily={sans} fontSize="10.5" fill={C.inkMuted}>{sub}</text>}
+    </g>
+  );
+  const arrow = (x1, y1, x2, y2) => <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={C.inkFaint} strokeWidth="1.6" markerEnd="url(#fc-arrow)" />;
+  return (
+    <div>
+      <svg viewBox="0 0 640 660" style={{ width: "100%", height: "auto" }} role="img" aria-label="Client lifecycle flowchart">
+        <defs><marker id="fc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill={C.inkFaint} /></marker></defs>
+        {box(180, 10, 280, 50, "Lead (prospect)", "Stage: Lead — no tasks yet", C.surface)}
+        {arrow(320, 60, 320, 88)}
+        {box(160, 90, 320, 56, "Start onboarding", "Checklist created · set the engagement date", C.surface, C.warn)}
+        {arrow(320, 146, 320, 174)}
+        {box(120, 176, 400, 56, "1 · Due diligence (ν. 4557/2018)", "KYC, UBOs, risk, PEP — due on the engagement date", C.surface)}
+        {arrow(320, 232, 320, 260)}
+        {box(120, 262, 400, 56, "2 · Contract & authorisations", "Agreement signed · ΑΑΔΕ/ΕΦΚΑ — due on the engagement date", C.surface)}
+        {arrow(320, 318, 320, 346)}
+        {box(120, 348, 400, 56, "3 · Company formation (new entity only)", "ΥΜΣ, ΓΕΜΗ, bank, ΕΦΚΑ — 3 working days after", C.surface)}
+        {arrow(320, 404, 320, 432)}
+        {box(120, 434, 400, 70, "4 · Client setup", "Hyper · tax system · e-invoicing · providers · POS", C.surface)}
+        <text x="320" y="494" textAnchor="middle" fontFamily={sans} fontSize="10.5" fill={C.inkMuted}>due 5 working days after the engagement date</text>
+        {arrow(320, 504, 320, 532)}
+        <path d="M320 534 L470 586 L320 638 L170 586 Z" fill={C.surface} stroke={C.accent} strokeWidth="1.8" />
+        <text x="320" y="578" textAnchor="middle" fontFamily={sans} fontSize="12" fontWeight="700" fill={C.ink}>Ready to go live?</text>
+        <text x="320" y="595" textAnchor="middle" fontFamily={sans} fontSize="10" fill={C.inkMuted}>Fees set · Agreement signed</text>
+        <text x="320" y="608" textAnchor="middle" fontFamily={sans} fontSize="10" fill={C.inkMuted}>DD completed · All tasks done</text>
+        {arrow(470, 586, 540, 586)}
+        <text x="505" y="578" textAnchor="middle" fontFamily={sans} fontSize="10.5" fontWeight="700" fill={C.accent}>Yes</text>
+        {box(542, 560, 92, 52, "LIVE", "go-live date set", C.surface, C.accent)}
+        <path d="M170 586 L40 586 L40 205 L118 205" fill="none" stroke={C.warn} strokeWidth="1.6" strokeDasharray="5 4" markerEnd="url(#fc-arrow)" />
+        <text x="26" y="400" textAnchor="middle" fontFamily={sans} fontSize="10.5" fontWeight="700" fill={C.warn} transform="rotate(-90 26 400)">No — finish what is missing</text>
+      </svg>
+      <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginTop: 6 }}>
+        The engagement date is the signing date of the agreement (or the date set in Details until it is signed). Deadlines count working days, excluding weekends and Greek public holidays.
+      </div>
+    </div>
+  );
+}
+// Go-live readiness: a client goes live only when all four are in place —
+// fees set, agreement signed, due diligence completed, every onboarding task done.
+function goLiveReadiness(client, tasks, aml) {
+  const prog = onboardingProgress(client, tasks);
+  const checks = [
+    { key: "fees", label: "Fees & hours — fixed fee set", ok: !!currentFeeOf(client).fixedFee },
+    { key: "agreement", label: "Agreement — signed", ok: client.contractStatus === "signed" },
+    { key: "dd", label: "Due diligence — completed", ok: aml?.status === "completed" },
+    { key: "tasks", label: `Tasks — all done (${prog.done}/${prog.total})`, ok: prog.complete },
+  ];
+  return { checks, ready: checks.every((c) => c.ok) };
+}
 // Starts onboarding: creates one task per active checklist item (assigned
 // to the account manager, or whoever starts it) and moves the client to
 // 'onboarding'. Items already present for this client are not duplicated.
@@ -1542,6 +1597,27 @@ function onboardingProgress(client, tasks) {
 // formed entity). Items marked for capital companies are skipped unless the
 // client's legal form is Α.Ε./Ε.Π.Ε./Ι.Κ.Ε.; "if applicable" items are
 // created with that note so they can be closed or deleted quickly.
+// Onboarding deadlines are counted from the engagement (contract) date:
+// due diligence and contract & authorisations are due on that date, company
+// formation 3 working days later, client setup 5 working days later.
+const ONBOARDING_OFFSET_WD = { aml: 0, contract: 0, formation: 3, setup: 5 };
+function addWorkingDays(d, n) {
+  const hol = holidayMapForYears([d.getFullYear(), d.getFullYear() + 1]);
+  let cur = new Date(d), left = n;
+  while (left > 0) { cur = addDays(cur, 1); if (!isWeekend(cur) && !hol.has(toKey(cur))) left--; }
+  return cur;
+}
+const onboardingBaseDate = (c) => c?.contractSignedOn || c?.engagementDate || null;
+function onboardingDueFor(stage, baseKey) {
+  return toKey(addWorkingDays(fromKey(baseKey), ONBOARDING_OFFSET_WD[stage] ?? 5));
+}
+// Re-dates every open onboarding task of the client from the base date.
+async function applyOnboardingDeadlines(clientId, baseKey) {
+  if (!baseKey) return;
+  for (const stage of Object.keys(ONBOARDING_OFFSET_WD)) {
+    await supabase.from("tasks").update({ due_date: onboardingDueFor(stage, baseKey) }).eq("client_id", clientId).eq("kind", "onboarding").eq("stage", stage).neq("status", "done");
+  }
+}
 async function startOnboarding(client, templates, existingTasks, user, { includeFormation = false } = {}) {
   const have = new Set(existingTasks.filter((t) => t.clientId === client.id && t.kind === "onboarding").map((t) => t.title));
   const stageRank = (k) => ONBOARDING_STAGES.findIndex((s) => s.key === k);
@@ -1553,7 +1629,7 @@ async function startOnboarding(client, templates, existingTasks, user, { include
   const rows = templates.filter((tpl) => tpl.active && !have.has(tpl.title) && applicable(tpl)).sort((a, b) => stageRank(a.stage) - stageRank(b.stage) || a.sortOrder - b.sortOrder).map((tpl) => ({
     client_id: client.id, kind: "onboarding", stage: tpl.stage, title: tpl.title, description: [tpl.appliesTo === "if_applicable" ? "If applicable — close or delete if not relevant." : null, tpl.description || null].filter(Boolean).join(" ") || null,
     assigned_to: client.accountManagerId || user.id, created_by: user.id,
-    due_date: toKey(addDays(TODAY, tpl.dueDays)), priority: "normal", status: "open",
+    due_date: onboardingBaseDate(client) ? onboardingDueFor(tpl.stage, onboardingBaseDate(client)) : toKey(addDays(TODAY, tpl.dueDays)), priority: "normal", status: "open",
   }));
   if (rows.length) {
     const { error } = await supabase.from("tasks").insert(rows);
@@ -6529,6 +6605,7 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
     if (status === "signed") { const d = window.prompt("Signing date (YYYY-MM-DD)", client.contractSignedOn || toKey(TODAY)); if (d === null) return; patch.contract_signed_on = d || toKey(TODAY); }
     if (status === "draft" && client.contractStatus === "signed") patch.contract_version = client.contractVersion + 1;
     await saveTerms(patch);
+    if (status === "signed") await applyOnboardingDeadlines(client.id, patch.contract_signed_on);
   }
   const preview = () => printHtml(`Σύμβαση — ${client.name}`, buildAgreementHtml({ client: previewClient, aml, firm: { ...DEFAULT_FIRM, ...firm }, employees, contacts }), { draft: false });
 
@@ -7182,6 +7259,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     refetchTasks();
   }
 
+  const [showFlow, setShowFlow] = useState(false);
   const progress = onboardingProgress(client, tasks);
   async function setLifecycle(lifecycle) {
     const patch = { lifecycle, go_live_date: lifecycle === "live" ? (client.goLiveDate || toKey(TODAY)) : client.goLiveDate };
@@ -7197,7 +7275,8 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     if (await startOnboarding(client, templates, tasks, user, { includeFormation: true })) { await refetchTasks(); await refetchClients(); setTab("tasks"); }
   }
   async function markGoLive() {
-    if (!progress.complete && !window.confirm(`${progress.total - progress.done} onboarding task(s) are still open. Mark the client as live anyway?`)) return;
+    const gl = goLiveReadiness(client, tasks, aml);
+    if (!gl.ready && !window.confirm(`Still missing: ${gl.checks.filter((c) => !c.ok).map((c) => c.label).join("; ")}.\n\nMark the client as live anyway?`)) return;
     await setLifecycle("live");
   }
 
@@ -7234,14 +7313,18 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
             <div>
               <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Onboarding in progress — {progress.done} of {progress.total} setup tasks done</div>
               <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginTop: 2 }}>
-                {progress.total === 0 ? "No checklist tasks exist for this client yet." : progress.complete ? "All done — the client goes live automatically." : "The client goes live automatically when the last checklist task is marked done."}
+                {progress.total === 0 ? "No checklist tasks exist for this client yet." : progress.complete ? "All tasks done." : "The client goes live automatically when all four conditions below are met."}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
+              <Btn size="sm" variant="ghost" onClick={() => setShowFlow(true)}>ⓘ Process</Btn>
               {progress.total === 0 && <Btn size="sm" variant="secondary" onClick={beginOnboarding}>Create checklist tasks</Btn>}
               {progress.total > 0 && !progress.list.some((t) => t.stage === "formation") && <Btn size="sm" variant="secondary" onClick={addFormationTasks}>Add formation tasks</Btn>}
               <Btn size="sm" variant="ghost" onClick={() => setTab("tasks")}>Open tasks</Btn>
             </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            {goLiveReadiness(client, tasks, aml).checks.map((c) => <Badge key={c.key} tone={c.ok ? "accent" : "warn"}>{c.ok ? "✓" : "○"} {c.label}</Badge>)}
           </div>
           {progress.total > 0 && (
             <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
@@ -7260,8 +7343,10 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
           )}
         </Panel>
       )}
+      {showFlow && <Modal title="Client onboarding process" onClose={() => setShowFlow(false)} width={680}><OnboardingFlowchart /></Modal>}
       {client.lifecycle === "lead" && (
         <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${C.inkFaint}` }}>
+          <Btn size="sm" variant="ghost" onClick={() => setShowFlow(true)}>ⓘ Process</Btn>
           <div style={{ fontFamily: sans, fontSize: 13, color: C.ink }}>Prospect — not yet set up. Press <strong>Start onboarding</strong> when the engagement is agreed: the setup checklist ({templates.filter((t) => t.active).length} tasks) is created for this client and assigned to the account manager.</div>
         </Panel>
       )}
@@ -7318,6 +7403,10 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
               <select style={inputStyle} value={client.lifecycle} onChange={(e) => setLifecycle(e.target.value)}>
                 {Object.entries(LIFECYCLE_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
+            </Field>
+            <Field label="Engagement / contract date (onboarding deadlines)">
+              <input type="date" style={inputStyle} value={client.contractSignedOn || client.engagementDate || ""} disabled={!!client.contractSignedOn} title={client.contractSignedOn ? "Taken from the signed agreement" : ""}
+                onChange={async (e) => { const v = e.target.value || null; await supabase.from("clients").update({ engagement_date: v }).eq("id", client.id); await applyOnboardingDeadlines(client.id, v); refetchClients(); refetchTasks(); }} />
             </Field>
             <Field label="Go-live date">
               <input type="date" style={inputStyle} value={client.goLiveDate || ""} onChange={async (e) => { await supabase.from("clients").update({ go_live_date: e.target.value || null }).eq("id", client.id); refetchClients(); }} />
@@ -7871,14 +7960,14 @@ export default function App() {
   // since only they may update clients.
   useEffect(() => {
     if (!user || user.role !== "admin") return;
-    const ready = clients.filter((c) => c.lifecycle === "onboarding" && onboardingProgress(c, tasks).complete);
+    const ready = clients.filter((c) => c.lifecycle === "onboarding" && goLiveReadiness(c, tasks, amlRecords.find((a) => a.clientId === c.id)).ready);
     if (ready.length === 0) return;
     (async () => {
       for (const c of ready) await supabase.from("clients").update({ lifecycle: "live", go_live_date: toKey(TODAY) }).eq("id", c.id);
       refetchClients();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, clients, user?.id]);
+  }, [tasks, clients, amlRecords, user?.id]);
 
   useEffect(() => {
     if (user && view === null) setView(user.role === "admin" ? "dashboard" : "timesheet");
