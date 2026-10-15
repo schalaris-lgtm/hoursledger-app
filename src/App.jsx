@@ -1580,11 +1580,11 @@ function OnboardingFlowchart() {
 }
 // Go-live readiness: a client goes live only when all four are in place —
 // fees set, agreement signed, due diligence completed, every onboarding task done.
-function goLiveReadiness(client, tasks, aml) {
+function goLiveReadiness(client, tasks, aml, documents = []) {
   const prog = onboardingProgress(client, tasks);
   const checks = [
     { key: "fees", label: "Fees & hours — fixed fee set", ok: !!currentFeeOf(client).fixedFee },
-    { key: "agreement", label: "Agreement — signed", ok: client.contractStatus === "signed" },
+    { key: "agreement", label: "Agreement — signed", ok: client.contractStatus === "signed" || documents.some((d) => d.clientId === client.id && d.category === "contract") },
     { key: "dd", label: "Due diligence — completed", ok: aml?.status === "completed" },
     { key: "tasks", label: `Tasks — all done (${prog.done}/${prog.total})`, ok: prog.complete },
   ];
@@ -7280,7 +7280,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     if (await startOnboarding(client, templates, tasks, user, { includeFormation: true })) { await refetchTasks(); await refetchClients(); setTab("tasks"); }
   }
   async function markGoLive() {
-    const gl = goLiveReadiness(client, tasks, aml);
+    const gl = goLiveReadiness(client, tasks, aml, documents);
     if (!gl.ready && !window.confirm(`Still missing: ${gl.checks.filter((c) => !c.ok).map((c) => c.label).join("; ")}.\n\nMark the client as live anyway?`)) return;
     await setLifecycle("live");
   }
@@ -7329,7 +7329,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            {goLiveReadiness(client, tasks, aml).checks.map((c) => <Badge key={c.key} tone={c.ok ? "accent" : "warn"}>{c.ok ? "✓" : "○"} {c.label}</Badge>)}
+            {goLiveReadiness(client, tasks, aml, documents).checks.map((c) => <Badge key={c.key} tone={c.ok ? "accent" : "warn"}>{c.ok ? "✓" : "○"} {c.label}</Badge>)}
           </div>
           {progress.total > 0 && (
             <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
@@ -7965,14 +7965,14 @@ export default function App() {
   // since only they may update clients.
   useEffect(() => {
     if (!user || user.role !== "admin") return;
-    const ready = clients.filter((c) => c.lifecycle === "onboarding" && goLiveReadiness(c, tasks, amlRecords.find((a) => a.clientId === c.id)).ready);
+    const ready = clients.filter((c) => c.lifecycle === "onboarding" && goLiveReadiness(c, tasks, amlRecords.find((a) => a.clientId === c.id), documents).ready);
     if (ready.length === 0) return;
     (async () => {
       for (const c of ready) await supabase.from("clients").update({ lifecycle: "live", go_live_date: toKey(TODAY) }).eq("id", c.id);
       refetchClients();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, clients, amlRecords, user?.id]);
+  }, [tasks, clients, amlRecords, documents, user?.id]);
 
   useEffect(() => {
     if (user && view === null) setView(user.role === "admin" ? "dashboard" : "timesheet");
