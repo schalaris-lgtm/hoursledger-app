@@ -8046,4 +8046,14 @@ export default function App() {
         {user.role === "admin" && view === "reports" && (
           <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
         )}
-        {user.role === "admin" && view === "c
+        {user.role === "admin" && view === "compliance" && (
+          <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
+            amlFirm={amlFirm} saveAmlFirm={saveAmlFirm} refetchCases={refetchAmlCases} refetchRequests={refetchAuthorityRequests} onOpenCard={openClientCard} />
+        )}
+        {user.role === "admin" && view === "billing" && (
+          <AdminBilling clients={clients} billingStatuses={billingStatuses} refetchBilling={refetchBilling} />
+        )}
+      </div>
+    </div>
+  );
+}
