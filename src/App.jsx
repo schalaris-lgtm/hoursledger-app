@@ -6105,7 +6105,7 @@ function OneOffServiceCard({ client, kind, title, hint, notePrefix, extras, refe
 
 function ClientFeesTab({ client, entries, employees, refetchClients }) {
   const [showRate, setShowRate] = useState(() => { try { return localStorage.getItem("gloria_show_rate") !== "0"; } catch { return true; } });
-  const toggleRate = () => setShowRate((v) => { const n = !v; try { localStorage.setItem("gloria_show_rate", n ? "1" : "0"); } catch { /* ignore */ } return n; });
+  const toggleRate = () => { const n = !showRate; setShowRate(n); try { localStorage.setItem("gloria_show_rate", n ? "1" : "0"); } catch { /* ignore */ } };
   const [viewPeriod, setViewPeriod] = useState("month");
   const [viewAnchor, setViewAnchor] = useState(TODAY);
   const cur = currentFeeOf(client);
