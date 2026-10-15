@@ -6104,6 +6104,8 @@ function OneOffServiceCard({ client, kind, title, hint, notePrefix, extras, refe
 }
 
 function ClientFeesTab({ client, entries, employees, refetchClients }) {
+  const [showRate, setShowRate] = useState(() => { try { return localStorage.getItem("gloria_show_rate") !== "0"; } catch { return true; } });
+  const toggleRate = () => setShowRate((v) => { const n = !v; try { localStorage.setItem("gloria_show_rate", n ? "1" : "0"); } catch { /* ignore */ } return n; });
   const [viewPeriod, setViewPeriod] = useState("month");
   const [viewAnchor, setViewAnchor] = useState(TODAY);
   const cur = currentFeeOf(client);
@@ -6207,9 +6209,12 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
   return (
     <div>
       <Panel style={{ marginBottom: 18 }}>
-        <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Effective rate by month</div>
-        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Effective rate = revenue ÷ hours worked for this client. Compare it with cost/h: if the rate is below cost/h, the client loses money. Last 12 months.</div>
-        {rateRows.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours or revenue yet.</div> : (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Effective rate by month</div>
+          <Btn size="sm" variant="ghost" onClick={toggleRate}>{showRate ? "Hide" : "Open"}</Btn>
+        </div>
+        {showRate && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, margin: "2px 0 10px" }}>Effective rate = revenue ÷ hours worked for this client. Compare it with cost/h: if the rate is below cost/h, the client loses money. Last 12 months.</div>}
+        {!showRate ? null : rateRows.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours or revenue yet.</div> : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sans, fontSize: 12.5 }}>
             <thead><tr>{["Month", "Hours", "Revenue", "Effective rate", "Cost", "Cost /h", "Profit"].map((h, i) => <th key={h} style={{ textAlign: i ? "right" : "left", padding: "6px 8px", color: C.inkMuted, fontWeight: 600, borderBottom: `1px solid ${C.border || "#ddd"}` }}>{h}</th>)}</tr></thead>
             <tbody>
@@ -8041,14 +8046,4 @@ export default function App() {
         {user.role === "admin" && view === "reports" && (
           <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
         )}
-        {user.role === "admin" && view === "compliance" && (
-          <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
-            amlFirm={amlFirm} saveAmlFirm={saveAmlFirm} refetchCases={refetchAmlCases} refetchRequests={refetchAuthorityRequests} onOpenCard={openClientCard} />
-        )}
-        {user.role === "admin" && view === "billing" && (
-          <AdminBilling clients={clients} billingStatuses={billingStatuses} refetchBilling={refetchBilling} />
-        )}
-      </div>
-    </div>
-  );
-}
+        {user.role === "admin" && view === "c
