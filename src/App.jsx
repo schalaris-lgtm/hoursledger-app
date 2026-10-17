@@ -1195,7 +1195,7 @@ const mapClientRow = (r) => ({
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
   contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null, contractOtherFeesText: r.contract_other_fees_text || "",
-  annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
+  vatRate: r.vat_rate === null || r.vat_rate === undefined ? 24 : Number(r.vat_rate), annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
   formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
 });
 const mapDocument = (r) => ({ id: r.id, clientId: r.client_id, category: r.category || "other", fileName: r.file_name, filePath: r.file_path, fileSize: Number(r.file_size) || 0, mimeType: r.mime_type || "", note: r.note || "", uploadedBy: r.uploaded_by || null, uploadedAt: r.uploaded_at });
@@ -3451,6 +3451,8 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
   const [lifecycleNew, setLifecycleNew] = useState("onboarding");
   const [newCompany, setNewCompany] = useState(false);
   const [lifecycleFilter, setLifecycleFilter] = useState("all");
+  const [hideInactive, setHideInactive] = useState(() => { try { return localStorage.getItem("gloria_hide_inactive") === "1"; } catch { return false; } });
+  const toggleHideInactive = (v) => { setHideInactive(v); try { localStorage.setItem("gloria_hide_inactive", v ? "1" : "0"); } catch { /* ignore */ } };
   const [allocAccounting, setAllocAccounting] = useState("");
   const [allocTax, setAllocTax] = useState("");
   const [allocPayroll, setAllocPayroll] = useState("");
@@ -3670,7 +3672,9 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
   const periodEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= viewRangeStart && d <= viewRangeEnd; });
   const filtered = clients
     .filter((c) => c.name.toLowerCase().includes(query.toLowerCase()))
-    .filter((c) => lifecycleFilter === "all" || c.lifecycle === lifecycleFilter);
+    .filter((c) => lifecycleFilter === "all" || c.lifecycle === lifecycleFilter)
+    .filter((c) => !hideInactive || c.active);
+  const inactiveCount = clients.filter((c) => !c.active).length;
   const liveClient = modal && modal !== "new" ? clients.find((c) => c.id === modal.id) : null;
   const lifecycleCounts = Object.fromEntries(Object.keys(LIFECYCLE_LABELS).map((k) => [k, clients.filter((c) => c.lifecycle === k).length]));
 
@@ -3754,6 +3758,9 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
               </button>
             ))}
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: sans, fontSize: 12.5, color: C.ink, cursor: "pointer" }}>
+            <input type="checkbox" checked={hideInactive} onChange={(e) => toggleHideInactive(e.target.checked)} /> Hide deactivated ({inactiveCount})
+          </label>
         </div>
         <TableShell headers={["Client", "Stage", "Hours", "Revenue", "Allocation", "Fixed fee", "Extra fees (period)", "Status", ""]}>
           {filtered.map((c) => {
@@ -5304,7 +5311,11 @@ function billingLines(clients) {
 function computeBillingLines(clients, billingStatuses) {
   const statusByKey = Object.fromEntries(billingStatuses.map((s) => [s.kind === "fixed" ? `fixed|${s.clientId}|${s.month}` : `extra|${s.extraFeeId}`, s]));
   const nameOf = (id) => clients.find((c) => c.id === id)?.name || "";
-  return billingLines(clients).map((l) => {
+  const vatOf = (id) => { const c = clients.find((x) => x.id === id); return c && c.vatRate !== undefined ? Number(c.vatRate) : 24; };
+  return billingLines(clients).map((raw) => {
+    // "amount" is the payable (net + VAT); "net" and "vat" are kept for display.
+    const rate = vatOf(raw.clientId), vat = Math.round(raw.amount * rate) / 100;
+    const l = { ...raw, net: raw.amount, vat, vatRate: rate, amount: raw.amount + vat };
     const st = statusByKey[l.key] || null;
     const status = billingLineStatus(l, st);
     const paidAmount = st?.paidDate ? (st.paidAmount ?? l.amount) : 0;
@@ -5350,7 +5361,7 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
   const inRange = allMonths ? allLines : allLines.filter((l) => l.month >= fromM && l.month <= toM);
   const visible = inRange
     .filter((l) => clientFilter === "all" || l.clientId === clientFilter)
-    .filter((l) => statusFilter === "all" || (statusFilter === "open" ? l.status !== "paid" : l.status === statusFilter));
+    .filter((l) => statusFilter === "all" || (statusFilter === "open" ? l.status !== "paid" : statusFilter === "unpaid" ? ["invoiced", "partial", "overdue"].includes(l.status) : l.status === statusFilter));
 
   // Point-in-time totals (all months up to today), independent of the period.
   const sumBy = (arr, pred, f) => arr.filter(pred).reduce((s, l) => s + f(l), 0);
@@ -5470,7 +5481,7 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
     exportToExcel(`billing-monitor-${toKey(TODAY)}.xlsx`, [
       { name: "Lines", rows: visible.map((l) => ({
         Month: l.month, Client: clientName(l.clientId), Type: l.kind === "fixed" ? "Fixed fee" : "Extra fee", Note: l.note,
-        "Amount (€)": l.amount, "Invoiced on": l.st?.invoicedDate || "", "Invoice ref": l.st?.invoiceRef || "",
+        "Net (€)": l.net, "VAT %": l.vatRate, "VAT (€)": l.vat, "Payable (€)": Number(l.amount.toFixed(2)), "Invoiced on": l.st?.invoicedDate || "", "Invoice ref": l.st?.invoiceRef || "",
         "Paid on": l.st?.paidDate || "", "Paid (€)": Number(l.paidAmount.toFixed(2)), "Outstanding (€)": Number(l.outstanding.toFixed(2)),
         Status: BILLING_STATUS_LABELS[l.status], "Days since invoice": l.daysSinceInvoice ?? "",
       })) },
@@ -5491,10 +5502,10 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
         } />
 
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
-        <StatCard label="Not invoiced yet" value={fmtEur(toInvoice)} accent={toInvoice > 0 ? C.warn : C.accent} sub="All months to date" />
-        <StatCard label="Invoiced, unpaid" value={fmtEur(invoicedUnpaid)} accent={invoicedUnpaid > 0 ? C.warn : C.accent} sub="Outstanding as of today" />
+        <StatCard label="Not invoiced yet" value={fmtEur(toInvoice)} accent={toInvoice > 0 ? C.warn : C.accent} sub="All months to date · incl. VAT" />
+        <StatCard label="Invoiced, unpaid" value={fmtEur(invoicedUnpaid)} accent={invoicedUnpaid > 0 ? C.warn : C.accent} sub="Outstanding as of today · incl. VAT" />
         <StatCard label="Overdue" value={fmtEur(overdue)} accent={overdue > 0 ? C.danger : C.accent} sub={`Invoiced > ${BILLING_OVERDUE_DAYS} days ago, unpaid`} />
-        <StatCard label="Fees in period" value={fmtEur(periodBilled)} sub={periodLabel(viewPeriod, rangeStart, rangeEnd)} />
+        <StatCard label="Fees in period" value={fmtEur(periodBilled)} sub={`${periodLabel(viewPeriod, rangeStart, rangeEnd)} · incl. VAT`} />
         <StatCard label="Paid, in period" value={fmtEur(periodPaid)} accent={C.accent} sub="Of the fees in this period" />
       </div>
 
@@ -5540,6 +5551,7 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
             <Field label="Status">
               <select style={{ ...inputStyle, width: 190 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                 <option value="open">Open (not paid)</option>
+                <option value="unpaid">Invoiced, unpaid + overdue</option>
                 <option value="all">All</option>
                 {Object.keys(BILLING_STATUS_LABELS).map((k) => <option key={k} value={k}>{BILLING_STATUS_LABELS[k]}</option>)}
               </select>
@@ -5564,14 +5576,16 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
               </div>
             )}
           </div>
-          <TableShell headers={[<input key="all" type="checkbox" checked={allSelectableTicked} onChange={toggleAllVisible} disabled={selectable.length === 0} title="Select all open lines on screen" />, "Month", "Client", "Type", "Amount", "Invoiced", "Paid", "Status", ""]}>
+          <TableShell headers={[<input key="all" type="checkbox" checked={allSelectableTicked} onChange={toggleAllVisible} disabled={selectable.length === 0} title="Select all open lines on screen" />, "Month", "Client", "Type", "Net", "VAT", "Payable", "Invoiced", "Paid", "Status", ""]}>
             {visible.map((l) => (
               <tr key={l.key} style={{ background: selected.has(l.key) ? C.accentSoft : undefined }}>
                 <Td>{l.status !== "paid" ? <input type="checkbox" checked={selected.has(l.key)} onChange={() => toggleLine(l.key)} /> : null}</Td>
                 <Td mono>{l.month}</Td>
                 <Td>{clientName(l.clientId)}</Td>
                 <Td style={{ color: C.inkMuted }} title={l.note || undefined}>{l.kind === "fixed" ? "Fixed fee" : `Extra${l.note ? ` — ${l.note}` : ""}`}</Td>
-                <Td mono>{fmtEur(l.amount)}</Td>
+                <Td mono style={{ color: C.inkMuted }}>{fmtEur(l.net)}</Td>
+                <Td mono style={{ color: C.inkMuted }} title={`ΦΠΑ ${l.vatRate}%`}>{l.vat > 0 ? fmtEur(l.vat) : "0%"}</Td>
+                <Td mono style={{ fontWeight: 700 }}>{fmtEur(l.amount)}</Td>
                 <Td mono style={{ color: l.st?.invoicedDate ? C.ink : C.inkFaint }}>
                   {l.st?.invoicedDate ? <>{l.st.invoicedDate}{l.st.invoiceRef ? <span style={{ color: C.inkMuted }}> · {l.st.invoiceRef}</span> : null}</> : "—"}
                 </Td>
@@ -5593,6 +5607,8 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
             ))}
             <tr style={{ fontWeight: 700, borderTop: `2px solid ${C.borderStrong}` }}>
               <Td /><Td>Total</Td><Td /><Td />
+              <Td mono>{fmtEur(visible.reduce((s, l) => s + l.net, 0))}</Td>
+              <Td mono>{fmtEur(visible.reduce((s, l) => s + l.vat, 0))}</Td>
               <Td mono>{fmtEur(visible.reduce((s, l) => s + l.amount, 0))}</Td>
               <Td mono>{fmtEur(visible.filter((l) => l.st?.invoicedDate).reduce((s, l) => s + l.amount, 0))}</Td>
               <Td mono>{fmtEur(visible.reduce((s, l) => s + l.paidAmount, 0))}</Td>
@@ -6249,9 +6265,21 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>{editingHistId ? "Edit fee terms" : "Fee terms"}</div>
           <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Saving with different numbers adds a new row to the history, effective from the date below — past periods are never overwritten.</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <Field label="Fixed monthly fee (€)"><input type="number" min="0" style={inputStyle} value={form.fixedFee} onChange={(e) => setForm({ ...form, fixedFee: e.target.value })} /></Field>
+            <Field label="Fixed monthly fee (€, net)"><input type="number" min="0" style={inputStyle} value={form.fixedFee} onChange={(e) => setForm({ ...form, fixedFee: e.target.value })} /></Field>
             <Field label="Effective from"><input type="date" style={inputStyle} value={form.effectiveDate} onChange={(e) => setForm({ ...form, effectiveDate: e.target.value })} /></Field>
             <Field label="Client end date (optional)"><input type="date" style={inputStyle} value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+            <Field label="ΦΠΑ on fees">
+              <select style={{ ...inputStyle, width: 170 }} value={String(client.vatRate ?? 24)}
+                onChange={async (e) => { const { error } = await supabase.from("clients").update({ vat_rate: Number(e.target.value) }).eq("id", client.id); if (error) { window.alert(`Couldn't save: ${error.message}`); return; } refetchClients(); }}>
+                <option value="24">24%</option>
+                <option value="0">0% (no VAT)</option>
+              </select>
+            </Field>
+            <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, paddingBottom: 8 }}>
+              {fee ? <>Payable per month: <strong style={{ fontFamily: mono, color: C.ink }}>{fmtEur(fee * (1 + (client.vatRate ?? 24) / 100))}</strong> ({fmtEur(fee)} + ΦΠΑ {fmtEur(fee * (client.vatRate ?? 24) / 100)})</> : "Revenue and profitability stay net of VAT."}
+            </div>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "12px 0 6px" }}>
             <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink }}>Split of the fee by cost center (€/month)</div>
