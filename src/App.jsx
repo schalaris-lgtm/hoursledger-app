@@ -106,10 +106,12 @@ const rentalExpenseAppliesTo = (x, monthKey) => x.kind === "recurring"
 // Same shape as rental expenses (recurring from–to, or extra for one month;
 // extras may be negative). Each one is allocated to a department, or to
 // "general" (company-wide, not attributed to a department).
-const OPEX_CATEGORIES = ["insurance", "accounting_software", "bank_costs", "depreciation", "ai_costs", "business_development", "other"];
+const OPEX_CATEGORIES = ["accounting_software", "other_software", "database", "ai_costs", "insurance", "car_insurance", "car_depreciation", "depreciation", "website", "emails", "server_cost", "business_development", "bank_costs", "other"];
 const OPEX_LABELS = {
-  insurance: "Insurance (ασφάλειες)", accounting_software: "Accounting software (λογιστικά προγράμματα)", bank_costs: "Bank charges (τραπεζικά κόστη)",
-  depreciation: "Equipment depreciation (αποσβέσεις εξοπλισμού)", ai_costs: "AI costs", business_development: "Business development", other: "Other (note required)",
+  accounting_software: "Accounting software (λογιστικά προγράμματα)", other_software: "Other software (PDF, Excel κ.λπ.)", database: "Database", ai_costs: "AI costs",
+  insurance: "Insurance — office (ασφάλεια γραφείου)", car_insurance: "Insurance — car (ασφάλεια αυτοκινήτου)",
+  car_depreciation: "Depreciation — car (αποσβέσεις αυτοκινήτου)", depreciation: "Depreciation — office (αποσβέσεις γραφείου)",
+  website: "Website", emails: "Emails", server_cost: "Server costs", business_development: "Business development", bank_costs: "Bank charges (τραπεζικά κόστη)", other: "Other (note required)",
 };
 const OPEX_GENERAL = "general";
 OPEX_LABELS.rental = "Rental (ενοίκια, utilities, κοινόχρηστα)";
@@ -4767,7 +4769,7 @@ function AdminOpex({ expenses, refetchOpex, rentalExpenses = [] }) {
   function openNew(k = "recurring") {
     setEditingId(null); setKind(k);
     const m = monthKeyOf(rangeStart);
-    setMonth(m); setFromMonth(m); setToMonth(""); setCategory("insurance"); setDepartment(OPEX_GENERAL); setAmount(""); setNote("");
+    setMonth(m); setFromMonth(m); setToMonth(""); setCategory("accounting_software"); setDepartment(OPEX_GENERAL); setAmount(""); setNote("");
     setModal(true);
   }
   function openEdit(x) {
