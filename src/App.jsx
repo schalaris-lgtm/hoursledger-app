@@ -79,6 +79,29 @@ const isActivityValue = (v) => typeof v === "string" && v.startsWith(ACTIVITY_PR
 // cost (per employee: a fixed cost center, or spread by their logged hours).
 const COST_CENTERS = ["accounting", "tax", "payroll", "other", "director", "finance", "rental"];
 const COST_CENTER_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other", director: "Director", finance: "Finance", rental: "Rental" };
+
+// ---- myDATA codification (ΑΑΔΕ) used by the invoicing export for Hyper ----
+// Invoice types for service fees, with the income-classification type that
+// normally goes with them. Category is always category1_3 (service income).
+// Confirm the combination against the AADE classification table if needed.
+const MYDATA_INVOICE_TYPES = {
+  "2.1": { label: "Τιμολόγιο Παροχής", incomeType: "E3_561_001", incomeTypeLabel: "Πωλήσεις αγαθών και υπηρεσιών Χονδρικές - Επιτηδευματιών" },
+  "2.2": { label: "Τιμολόγιο Παροχής / Ενδοκοινοτική Παροχή Υπηρεσιών", incomeType: "E3_561_005", incomeTypeLabel: "Πωλήσεις αγαθών και υπηρεσιών Εξωτερικού Ενδοκοινοτικές" },
+  "2.3": { label: "Τιμολόγιο Παροχής / Παροχή Υπηρεσιών σε λήπτη Τρίτης Χώρας", incomeType: "E3_561_006", incomeTypeLabel: "Πωλήσεις αγαθών και υπηρεσιών Εξωτερικού Τρίτες Χώρες" },
+};
+const MYDATA_INCOME_CATEGORY = { code: "category1_3", label: "Έσοδα από Παροχή Υπηρεσιών" };
+// vatCategory 1 = 24%, 7 = 0% (needs a vatExemptionCategory)
+const MYDATA_VAT_CATEGORY = { 24: 1, 0: 7 };
+const MYDATA_VAT_EXEMPTIONS = [
+  [1, "Χωρίς ΦΠΑ - άρθρο 2 και 3 του Κώδικα ΦΠΑ"], [2, "Χωρίς ΦΠΑ - άρθρο 5 του Κώδικα ΦΠΑ"], [3, "Χωρίς ΦΠΑ - άρθρο 17 του Κώδικα ΦΠΑ"], [4, "Χωρίς ΦΠΑ - άρθρο 18 του Κώδικα ΦΠΑ"],
+  [5, "Χωρίς ΦΠΑ - άρθρο 21 του Κώδικα ΦΠΑ"], [6, "Χωρίς ΦΠΑ - άρθρο 24 του Κώδικα ΦΠΑ"], [7, "Χωρίς ΦΠΑ - άρθρο 27 του Κώδικα ΦΠΑ"], [8, "Χωρίς ΦΠΑ - άρθρο 29 του Κώδικα ΦΠΑ"],
+  [9, "Χωρίς ΦΠΑ - άρθρο 30 του Κώδικα ΦΠΑ"], [10, "Χωρίς ΦΠΑ - άρθρο 31 του Κώδικα ΦΠΑ"], [11, "Χωρίς ΦΠΑ - άρθρο 32 του Κώδικα ΦΠΑ"], [14, "Χωρίς ΦΠΑ - άρθρο 33 του Κώδικα ΦΠΑ"],
+  [15, "Χωρίς ΦΠΑ - άρθρο 44 του Κώδικα ΦΠΑ"], [16, "Χωρίς ΦΠΑ - άρθρο 45 του Κώδικα ΦΠΑ"], [17, "Χωρίς ΦΠΑ - άρθρο 47 του Κώδικα ΦΠΑ"], [18, "Χωρίς ΦΠΑ - άρθρο 48 του Κώδικα ΦΠΑ"],
+  [19, "Χωρίς ΦΠΑ - άρθρο 54 του Κώδικα ΦΠΑ"], [24, "Χωρίς ΦΠΑ - άρθρο 8 του Κώδικα ΦΠΑ"], [25, "Χωρίς ΦΠΑ - ΠΟΛ.1029/1995"], [26, "Χωρίς ΦΠΑ - ΠΟΛ.1167/2015"], [27, "Λοιπές Εξαιρέσεις ΦΠΑ"],
+];
+// Service wording on the invoice line.
+const INVOICE_SERVICES = { accounting: "Λογιστικές υπηρεσίες", payroll: "Υπηρεσίες μισθοδοσίας", tax: "Φορολογικές υπηρεσίες", formation: "Υπηρεσίες σύστασης εταιρείας", advisory: "Συμβουλευτικές υπηρεσίες", other: "Λοιπές υπηρεσίες" };
+const EXTRA_SERVICE_BY_CC = { accounting: "accounting", tax: "tax", payroll: "payroll", other: "other", director: "advisory", finance: "advisory", rental: "other" };
 // Departments group cost centers for the P&L: each cost center belongs to
 // exactly one department, so department totals reconcile to the company.
 const DEPARTMENTS = [
@@ -106,12 +129,12 @@ const rentalExpenseAppliesTo = (x, monthKey) => x.kind === "recurring"
 // Same shape as rental expenses (recurring from–to, or extra for one month;
 // extras may be negative). Each one is allocated to a department, or to
 // "general" (company-wide, not attributed to a department).
-const OPEX_CATEGORIES = ["accounting_software", "other_software", "database", "ai_costs", "insurance", "car_insurance", "car_depreciation", "depreciation", "website", "emails", "server_cost", "business_development", "bank_costs", "other"];
+const OPEX_CATEGORIES = ["accounting_software", "other_software", "database", "ai_costs", "insurance", "car_insurance", "car_depreciation", "depreciation", "website", "emails", "server_cost", "business_development", "bank_costs", "efka_director", "health_director", "pos_charges", "other"];
 const OPEX_LABELS = {
   accounting_software: "Accounting software (λογιστικά προγράμματα)", other_software: "Other software (PDF, Excel κ.λπ.)", database: "Database", ai_costs: "AI costs",
   insurance: "Insurance — office (ασφάλεια γραφείου)", car_insurance: "Insurance — car (ασφάλεια αυτοκινήτου)",
   car_depreciation: "Depreciation — car (αποσβέσεις αυτοκινήτου)", depreciation: "Depreciation — office (αποσβέσεις γραφείου)",
-  website: "Website", emails: "Emails", server_cost: "Server costs", business_development: "Business development", bank_costs: "Bank charges (τραπεζικά κόστη)", other: "Other (note required)",
+  website: "Website", emails: "Emails", server_cost: "Server costs", business_development: "Business development", bank_costs: "Bank charges (τραπεζικά κόστη)", efka_director: "EFKA — director (ΕΦΚΑ διαχειριστή)", health_director: "Health insurance — director (ασφάλεια υγείας διαχειριστή)", pos_charges: "POS charges (προμήθειες POS)", other: "Other (note required)",
 };
 const OPEX_GENERAL = "general";
 OPEX_LABELS.rental = "Rental (ενοίκια, utilities, κοινόχρηστα)";
@@ -1197,7 +1220,9 @@ const mapClientRow = (r) => ({
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
   contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null, contractOtherFeesText: r.contract_other_fees_text || "",
-  vatRate: r.vat_rate === null || r.vat_rate === undefined ? 24 : Number(r.vat_rate), annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
+  vatRate: r.vat_rate === null || r.vat_rate === undefined ? 24 : Number(r.vat_rate),
+  invoiceType: r.invoice_type && MYDATA_INVOICE_TYPES[r.invoice_type] ? r.invoice_type : "2.1", vatExemptionCategory: r.vat_exemption_category === null || r.vat_exemption_category === undefined ? null : Number(r.vat_exemption_category), fixedService: r.fixed_service && INVOICE_SERVICES[r.fixed_service] ? r.fixed_service : "accounting",
+  annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
   formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
 });
 const mapDocument = (r) => ({ id: r.id, clientId: r.client_id, category: r.category || "other", fileName: r.file_name, filePath: r.file_path, fileSize: Number(r.file_size) || 0, mimeType: r.mime_type || "", note: r.note || "", uploadedBy: r.uploaded_by || null, uploadedAt: r.uploaded_at });
@@ -5302,7 +5327,7 @@ function billingLines(clients) {
       }
     }
     (c.extraFeeEntries || []).forEach((x) => {
-      lines.push({ key: `extra|${x.id}`, clientId: c.id, kind: "extra", month: x.month, amount: x.amount, extraFeeId: x.id, note: x.note || "" });
+      lines.push({ key: `extra|${x.id}`, clientId: c.id, kind: "extra", month: x.month, amount: x.amount, extraFeeId: x.id, note: x.note || "", costCenter: x.costCenter || "other" });
     });
   });
   return lines;
@@ -5479,8 +5504,36 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
     setSelected(new Set());
   }
 
+  // One row per line still to be invoiced, coded the way myDATA expects it,
+  // ready to be keyed into (or imported by) the invoicing program.
+  function invoicingRows() {
+    const monthGr = (m) => { const [y, mo] = m.split("-").map(Number); return new Date(y, mo - 1, 1).toLocaleDateString("el-GR", { month: "long", year: "numeric" }); };
+    return visible.filter((l) => l.status === "pending").map((l) => {
+      const c = clients.find((x) => x.id === l.clientId) || {};
+      const type = MYDATA_INVOICE_TYPES[c.invoiceType] ? c.invoiceType : "2.1";
+      const t = MYDATA_INVOICE_TYPES[type];
+      const svcKey = l.kind === "fixed" ? (c.fixedService || "accounting") : (String(l.note || "").startsWith("Start-up & business formation") ? "formation" : EXTRA_SERVICE_BY_CC[l.costCenter] || "other");
+      const svc = INVOICE_SERVICES[svcKey] || INVOICE_SERVICES.other;
+      const noVat = Number(l.vatRate) === 0;
+      const ex = noVat ? MYDATA_VAT_EXEMPTIONS.find(([k]) => k === c.vatExemptionCategory) : null;
+      const issues = [!c.afm && "Λείπει ΑΦΜ", noVat && !ex && "Λείπει αιτία εξαίρεσης ΦΠΑ"].filter(Boolean).join("; ");
+      return {
+        "Πελάτης": c.name || "", "ΑΦΜ": c.afm || "", "Email": c.email || "",
+        "Τύπος παραστατικού (κωδ.)": type, "Τύπος παραστατικού": t.label,
+        "Περιγραφή υπηρεσίας": l.kind === "fixed" ? `${svc} — ${monthGr(l.month)}` : `${svc}${l.note ? ` — ${l.note}` : ""} (${monthGr(l.month)})`,
+        "Περίοδος": l.month, "Καθαρή αξία (€)": Number(l.net.toFixed(2)),
+        "Κατηγορία ΦΠΑ (κωδ.)": MYDATA_VAT_CATEGORY[noVat ? 0 : 24] ?? "", "ΦΠΑ %": l.vatRate, "ΦΠΑ (€)": Number(l.vat.toFixed(2)), "Σύνολο (€)": Number(l.amount.toFixed(2)),
+        "Αιτία εξαίρεσης ΦΠΑ (κωδ.)": ex ? ex[0] : "", "Αιτία εξαίρεσης ΦΠΑ": ex ? ex[1] : "",
+        "Χαρακτηρισμός εσόδων — κατηγορία": MYDATA_INCOME_CATEGORY.code, "Χαρακτηρισμός εσόδων — τύπος": t.incomeType, "Περιγραφή τύπου": t.incomeTypeLabel,
+        "Έλεγχος": issues,
+      };
+    });
+  }
+
   function exportBilling() {
+    const toInvoiceRows = invoicingRows();
     exportToExcel(`billing-monitor-${toKey(TODAY)}.xlsx`, [
+      ...(toInvoiceRows.length ? [{ name: "To invoice (myDATA)", rows: toInvoiceRows }] : []),
       { name: "Lines", rows: visible.map((l) => ({
         Month: l.month, Client: clientName(l.clientId), Type: l.kind === "fixed" ? "Fixed fee" : "Extra fee", Note: l.note,
         "Net (€)": l.net, "VAT %": l.vatRate, "VAT (€)": l.vat, "Payable (€)": Number(l.amount.toFixed(2)), "Invoiced on": l.st?.invoicedDate || "", "Invoice ref": l.st?.invoiceRef || "",
@@ -6282,6 +6335,28 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
             <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, paddingBottom: 8 }}>
               {fee ? <>Payable per month: <strong style={{ fontFamily: mono, color: C.ink }}>{fmtEur(fee * (1 + (client.vatRate ?? 24) / 100))}</strong> ({fmtEur(fee)} + ΦΠΑ {fmtEur(fee * (client.vatRate ?? 24) / 100)})</> : "Revenue and profitability stay net of VAT."}
             </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+            {[
+              ["invoice_type", "Invoice type (myDATA)", String(client.invoiceType || "2.1"), Object.entries(MYDATA_INVOICE_TYPES).map(([k, v]) => [k, `${k} — ${v.label}`]), 300],
+              ["fixed_service", "Service on the monthly invoice", client.fixedService || "accounting", Object.entries(INVOICE_SERVICES), 220],
+            ].map(([col, label, val, opts, w]) => (
+              <Field key={col} label={label}>
+                <select style={{ ...inputStyle, width: w }} value={val}
+                  onChange={async (e) => { const { error } = await supabase.from("clients").update({ [col]: e.target.value }).eq("id", client.id); if (error) { window.alert(`Couldn't save: ${error.message}`); return; } refetchClients(); }}>
+                  {opts.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </select>
+              </Field>
+            ))}
+            {Number(client.vatRate ?? 24) === 0 && (
+              <Field label="VAT exemption reason (0% VAT)">
+                <select style={{ ...inputStyle, width: 300 }} value={client.vatExemptionCategory ?? ""}
+                  onChange={async (e) => { const { error } = await supabase.from("clients").update({ vat_exemption_category: e.target.value === "" ? null : Number(e.target.value) }).eq("id", client.id); if (error) { window.alert(`Couldn't save: ${error.message}`); return; } refetchClients(); }}>
+                  <option value="">— choose —</option>
+                  {MYDATA_VAT_EXEMPTIONS.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
+                </select>
+              </Field>
+            )}
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "12px 0 6px" }}>
             <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink }}>Split of the fee by cost center (€/month)</div>
