@@ -2347,7 +2347,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, billingPanel: true, ddPanel: true, compliancePanel: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
-    monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true, effectiveRateTable: true,
+    monthlyEmployeeTable: true, weeklyEmployeeTable: true, monthlyClientTable: true, companyMonthlyTable: true, effectiveRateTable: true, clientProfitTable: true,
   };
   const [configRaw, setConfig] = useAppSetting("dashboard_config", DEFAULT_DASHBOARD_CONFIG);
   // Merge with the defaults so panels added later (billing, compliance, tasks…) appear even when a layout was saved earlier.
@@ -2445,6 +2445,21 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const opex = opexForRange(operatingExpenses, rangeStart, rangeEnd, rentalExpenses);
   const operatingProfit = totalProfit - opex.total;
   const operatingMargin = totalRevenue > 0 ? (operatingProfit / totalRevenue) * 100 : null;
+
+  // Profitability by client.
+  //  • Gross margin = (revenue − labor cost of the hours spent on the client) ÷ revenue.
+  //  • Operating margin additionally charges every client with the SAME fixed share of the
+  //    overhead: labor cost of non-client hours (internal activities) + operating expenses,
+  //    divided equally between the clients that billed in the period. The rows add up to
+  //    the company's operating profit.
+  const clientsWithRevenue = byClient.filter((c) => c.revenue > 0.005);
+  const directCostTotal = byClient.reduce((s, c) => s + c.cost, 0);
+  const overheadPool = (totalLaborCost - directCostTotal) + opex.total;
+  const overheadPerClient = clientsWithRevenue.length ? overheadPool / clientsWithRevenue.length : 0;
+  const clientProfitRows = clientsWithRevenue.map((c) => {
+    const grossProfit = c.revenue - c.cost, operatingProfitC = grossProfit - overheadPerClient;
+    return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead: overheadPerClient, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
+  }).sort((a, b) => a.operatingMargin - b.operatingMargin);
 
   // Revenue per cost center first (needed as the allocation key for
   // departments that don't log hours), then each employee's cost spread
@@ -2657,7 +2672,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const CONFIG_LABELS = {
     statCards: "Summary cards", billingPanel: "Billing — outstanding alert", ddPanel: "Due diligence — client files alert", compliancePanel: "AML compliance alerts (firm, reports, authorities)", onboardingPanel: "Pipeline — leads & onboarding", tasksPanel: "Tasks — overdue & due this week", growthPanel: "Growth — vs. previous period and YoY", allocationChart: "Actual vs. allocated chart", revenueCostChart: "Revenue vs. cost chart",
     byClientTable: "Hours by client table", byEmployeeTable: "Hours by employee table", nonChargeableTable: "Non-chargeable time", profitabilityTable: "Profitability by department", departmentTable: "P&L by department (detail)", costCenterTable: "Revenue & cost by cost center",
-    monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month", effectiveRateTable: "Effective rate by client, by month",
+    monthlyEmployeeTable: "Hours per employee, by month", weeklyEmployeeTable: "Hours per employee, by week", monthlyClientTable: "Client analysis, by month", effectiveRateTable: "Effective rate by client, by month", clientProfitTable: "Profitability by client (gross / operating margin)",
     companyMonthlyTable: "Company overview, by month",
   };
 
@@ -3212,6 +3227,46 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                   <Td mono>{e.months.reduce((s, h) => s + h, 0).toFixed(1)}</Td>
                 </tr>
               ))}
+            </TableShell>
+          </Panel>
+        )}
+
+        {config.clientProfitTable && (
+          <Panel style={{ flex: "1 1 100%", minWidth: 380 }}>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Profitability by client — gross and operating margin</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
+              Gross margin = (revenue − labor cost of the hours on the client) ÷ revenue. Operating margin also charges each client the same fixed overhead of {fmtEur(overheadPerClient)} (internal-hours cost + operating expenses ÷ {clientsWithRevenue.length} clients) for the selected period. Sorted from lowest operating margin.
+            </div>
+            <TableShell headers={["Client", "Hours", "Revenue", "Labor cost", "Gross profit", "Gross margin", "Overhead", "Operating profit", "Operating margin"]}>
+              {clientProfitRows.map((r) => (
+                <tr key={r.id}>
+                  <Td>{r.name}</Td>
+                  <Td mono>{r.hours.toFixed(1)}</Td>
+                  <Td mono>{fmtEur(r.revenue)}</Td>
+                  <Td mono>{fmtEur(r.cost)}</Td>
+                  <Td mono>{fmtEur(r.grossProfit)}</Td>
+                  <Td mono style={{ fontWeight: 700, color: r.grossMargin < 0 ? C.danger : undefined }}>{r.grossMargin.toFixed(0)}%</Td>
+                  <Td mono>{fmtEur(r.overhead)}</Td>
+                  <Td mono style={{ color: r.operatingProfit < 0 ? C.danger : undefined }}>{fmtEur(r.operatingProfit)}</Td>
+                  <Td mono style={{ fontWeight: 700, color: r.operatingMargin < 0 ? C.danger : undefined }}>{r.operatingMargin.toFixed(0)}%</Td>
+                </tr>
+              ))}
+              {clientProfitRows.length > 0 && (() => {
+                const t = clientProfitRows.reduce((a, r) => ({ h: a.h + r.hours, rev: a.rev + r.revenue, c: a.c + r.cost, gp: a.gp + r.grossProfit, oh: a.oh + r.overhead, op: a.op + r.operatingProfit }), { h: 0, rev: 0, c: 0, gp: 0, oh: 0, op: 0 });
+                return (
+                  <tr style={{ background: C.accentSoft }}>
+                    <Td style={{ fontWeight: 700 }}>Total</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{t.h.toFixed(1)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{fmtEur(t.rev)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{fmtEur(t.c)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{fmtEur(t.gp)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{t.rev > 0 ? ((t.gp / t.rev) * 100).toFixed(0) + "%" : "—"}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{fmtEur(t.oh)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{fmtEur(t.op)}</Td>
+                    <Td mono style={{ fontWeight: 700 }}>{t.rev > 0 ? ((t.op / t.rev) * 100).toFixed(0) + "%" : "—"}</Td>
+                  </tr>
+                );
+              })()}
             </TableShell>
           </Panel>
         )}
