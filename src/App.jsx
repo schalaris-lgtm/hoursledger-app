@@ -2446,21 +2446,6 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const operatingProfit = totalProfit - opex.total;
   const operatingMargin = totalRevenue > 0 ? (operatingProfit / totalRevenue) * 100 : null;
 
-  // Profitability by client.
-  //  • Gross margin = (revenue − labor cost of the hours spent on the client) ÷ revenue.
-  //  • Operating margin additionally charges every client with the SAME fixed share of the
-  //    overhead: labor cost of non-client hours (internal activities) + operating expenses,
-  //    divided equally between the clients that billed in the period. The rows add up to
-  //    the company's operating profit.
-  const clientsWithRevenue = byClient.filter((c) => c.revenue > 0.005);
-  const directCostTotal = byClient.reduce((s, c) => s + c.cost, 0);
-  const overheadPool = (totalLaborCost - directCostTotal) + opex.total;
-  const overheadPerClient = clientsWithRevenue.length ? overheadPool / clientsWithRevenue.length : 0;
-  const clientProfitRows = clientsWithRevenue.map((c) => {
-    const grossProfit = c.revenue - c.cost, operatingProfitC = grossProfit - overheadPerClient;
-    return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead: overheadPerClient, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
-  }).sort((a, b) => a.operatingMargin - b.operatingMargin);
-
   // Revenue per cost center first (needed as the allocation key for
   // departments that don't log hours), then each employee's cost spread
   // across their department's cost centers.
@@ -2476,6 +2461,52 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     costByDepartment[ec.department] = (costByDepartment[ec.department] || 0) + ec.cost;
     unallocatedCostByDepartment[ec.department] = (unallocatedCostByDepartment[ec.department] || 0) + (ec.byCostCenter[UNALLOCATED] || 0);
   });
+
+  // Profitability by client — gross margin and operating margin.
+  //  • Gross margin = (revenue − labor cost of the hours spent on the client) ÷ revenue.
+  //  • Operating margin also charges each client its share of the OVERHEAD, allocated by cost
+  //    center with the client's HOURS as the driver:
+  //      pool of a cost center = labor cost not charged to clients (internal activities, hours not
+  //                              logged on a client) + operating expenses of that cost center
+  //      client's share        = pool × client hours in that cost center ÷ all client hours in it
+  //    Accounting / Tax / Payroll / Other use the hours logged with that category; Director,
+  //    Finance, Rental and General (company-wide) use the client's total hours. The rows add up
+  //    to the company's operating profit.
+  const OVERHEAD_CCS = [...COST_CENTERS, "general"];
+  const clientIdsInRange = new Set(byClient.map((c) => c.id));
+  const billed = byClient.filter((c) => c.revenue > 0.005);
+  const ovhDriver = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, {}]));
+  billed.forEach((c) => {
+    const ents = rangeEntries.filter((e) => e.clientId === c.id);
+    const total = ents.reduce((s, e) => s + e.hours, 0);
+    OVERHEAD_CCS.forEach((cc) => { ovhDriver[cc][c.id] = CATEGORIES.includes(cc) ? ents.filter((e) => (CATEGORIES.includes(e.category) ? e.category : "other") === cc).reduce((s, e) => s + e.hours, 0) : total; });
+  });
+  const ovhDriverTotal = (cc) => Object.values(ovhDriver[cc]).reduce((s, v) => s + v, 0);
+  const ovhPool = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, 0]));
+  employeeCosts.forEach((ec) => {
+    if (!(ec.cost > 0)) return;
+    const attributed = ec.hours > 0 ? ec.cost * (ec.entries.filter((e) => e.clientId && clientIdsInRange.has(e.clientId)).reduce((s, e) => s + e.hours, 0) / ec.hours) : 0;
+    const unattributed = ec.cost - attributed;
+    Object.entries(ec.byCostCenter).forEach(([cc, v]) => { ovhPool[cc === UNALLOCATED ? "general" : cc] += unattributed * (v / ec.cost); });
+  });
+  const spreadPool = (amount, keys, weightOf) => {
+    const w = keys.map(weightOf), t = w.reduce((s, x) => s + x, 0);
+    keys.forEach((k, i) => { ovhPool[k] += t > 0 ? amount * (w[i] / t) : amount / keys.length; });
+  };
+  spreadPool(opex.byDepartment.accounting_team || 0, CATEGORIES, (cc) => ovhDriverTotal(cc));
+  spreadPool(opex.byDepartment.management_team || 0, ["director", "finance"], (cc) => revenueByCC[cc] || 0);
+  ovhPool.rental += opex.byDepartment.rental || 0;
+  ovhPool.general += opex.byDepartment[OPEX_GENERAL] || 0;
+  const clientOverhead = Object.fromEntries(billed.map((c) => [c.id, 0]));
+  const overheadByCC = OVERHEAD_CCS.map((cc) => {
+    const pool = ovhPool[cc], hours = ovhDriverTotal(cc);
+    billed.forEach((c) => { clientOverhead[c.id] += hours > 0 ? pool * (ovhDriver[cc][c.id] / hours) : pool / billed.length; });
+    return { key: cc, label: cc === "general" ? "General (company-wide)" : costCenterLabel(cc), pool, hours, perHour: hours > 0 ? pool / hours : null };
+  }).filter((r) => Math.abs(r.pool) > 0.005);
+  const clientProfitRows = billed.map((c) => {
+    const grossProfit = c.revenue - c.cost, overhead = clientOverhead[c.id], operatingProfitC = grossProfit - overhead;
+    return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
+  }).sort((a, b) => a.operatingMargin - b.operatingMargin);
 
   // Revenue, labor cost and profit per cost center for the period. The
   // rows add up to the same totals as the cards above; "Unallocated" only
@@ -3235,7 +3266,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           <Panel style={{ flex: "1 1 100%", minWidth: 380 }}>
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Profitability by client — gross and operating margin</div>
             <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
-              Gross margin = (revenue − labor cost of the hours on the client) ÷ revenue. Operating margin also charges each client the same fixed overhead of {fmtEur(overheadPerClient)} (internal-hours cost + operating expenses ÷ {clientsWithRevenue.length} clients) for the selected period. Sorted from lowest operating margin.
+              Gross margin = (revenue − labor cost of the hours on the client) ÷ revenue. Operating margin also charges each client its share of the overhead (cost of internal hours + operating expenses), allocated by cost center in proportion to the hours spent on the client — see the table below. Sorted from lowest operating margin.
             </div>
             <TableShell headers={["Client", "Hours", "Revenue", "Labor cost", "Gross profit", "Gross margin", "Overhead", "Operating profit", "Operating margin"]}>
               {clientProfitRows.map((r) => (
@@ -3267,6 +3298,23 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
                   </tr>
                 );
               })()}
+            </TableShell>
+            <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, color: C.ink, margin: "16px 0 2px" }}>Overhead by cost center</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 8 }}>Pool = labor cost not charged to clients + operating expenses of the cost center. Driver = client hours (Accounting / Tax / Payroll / Other: hours logged with that category; Director, Finance, Rental, General: total client hours).</div>
+            <TableShell headers={["Cost center", "Overhead pool", "Driver hours", "Overhead per hour"]}>
+              {overheadByCC.map((r) => (
+                <tr key={r.key}>
+                  <Td>{r.label}</Td>
+                  <Td mono>{fmtEur(r.pool)}</Td>
+                  <Td mono>{r.hours.toFixed(1)}</Td>
+                  <Td mono>{r.perHour != null ? "€" + r.perHour.toFixed(0) + "/h" : "split equally"}</Td>
+                </tr>
+              ))}
+              <tr style={{ background: C.accentSoft }}>
+                <Td style={{ fontWeight: 700 }}>Total</Td>
+                <Td mono style={{ fontWeight: 700 }}>{fmtEur(overheadByCC.reduce((s, r) => s + r.pool, 0))}</Td>
+                <Td /><Td />
+              </tr>
             </TableShell>
           </Panel>
         )}
