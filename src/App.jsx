@@ -1050,6 +1050,8 @@ function Sidebar({ user, view, setView }) {
     { key: "timesheet", label: "My Timesheet", icon: Clock },
     { key: "timeoff", label: "Time Off", icon: CalendarDays },
     { key: "calendar", label: "Calendar", icon: CalendarRange },
+    { key: "clients", label: "Clients", icon: Building2 },
+    { key: "billing", label: "Billing", icon: Receipt },
   ];
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -3824,7 +3826,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
                 "Fee → Other note": c.feeSplitNote || "",
               })),
             }])}>Export to Excel</Btn>
-            <Btn variant="secondary" onClick={() => setShowAmlRegister((v) => !v)}>{showAmlRegister ? "Hide AML register" : "AML register"}</Btn>
+            {user.role === "admin" && <Btn variant="secondary" onClick={() => setShowAmlRegister((v) => !v)}>{showAmlRegister ? "Hide AML register" : "AML register"}</Btn>}
             <Btn icon={Plus} onClick={openNew}>Add client</Btn>
           </div>
         } />
@@ -4016,7 +4018,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
                 )}
               </Field>
             )}
-            {liveClient && (() => {
+            {liveClient && user.role === "admin" && (() => {
               const clientEntries = entries.filter((e) => e.clientId === liveClient.id);
               const [pStart, pEnd] = periodRange(viewPeriod, viewAnchor);
               const inRange = (rStart, rEnd) => clientEntries.filter((e) => { const d = fromKey(e.date); return d >= rStart && d <= rEnd; });
@@ -6277,7 +6279,7 @@ function OneOffServiceCard({ client, kind, title, hint, notePrefix, extras, refe
   );
 }
 
-function ClientFeesTab({ client, entries, employees, refetchClients }) {
+function ClientFeesTab({ client, entries, employees, refetchClients, isAdmin = true }) {
   const [showRate, setShowRate] = useState(() => { try { return localStorage.getItem("gloria_show_rate") !== "0"; } catch { return true; } });
   const toggleRate = () => { const n = !showRate; setShowRate(n); try { localStorage.setItem("gloria_show_rate", n ? "1" : "0"); } catch { /* ignore */ } };
   const [viewPeriod, setViewPeriod] = useState("month");
@@ -6382,7 +6384,7 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
 
   return (
     <div>
-      <Panel style={{ marginBottom: 18 }}>
+      {isAdmin && <Panel style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink }}>Effective rate by month</div>
           <Btn size="sm" variant="ghost" onClick={toggleRate}>{showRate ? "Hide" : "Open"}</Btn>
@@ -6409,7 +6411,7 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
             </tbody>
           </table>
         )}
-      </Panel>
+      </Panel>}
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Annual & start-up services</div>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>Switch on only what applies to this client. "Post to revenue" adds the fee as an extra fee, so it appears in revenue, profitability and the billing monitor.</div>
@@ -6536,10 +6538,10 @@ function ClientFeesTab({ client, entries, employees, refetchClients }) {
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 8 }}>Hours & revenue</div>
             <PeriodSelector period={viewPeriod} setPeriod={setViewPeriod} anchor={viewAnchor} setAnchor={setViewAnchor} />
             <div style={{ display: "flex", gap: 14, margin: "12px 0", flexWrap: "wrap" }}>
-              <StatCard label="Hours" value={totalHours.toFixed(2) + "h"} sub={metrics.allocation ? `of ${metrics.allocation.toFixed(1)}h allocated` : "No allocation set"} />
+              {isAdmin && <StatCard label="Hours" value={totalHours.toFixed(2) + "h"} sub={metrics.allocation ? `of ${metrics.allocation.toFixed(1)}h allocated` : "No allocation set"} />}
               <StatCard label="Revenue" value={fmtEur(metrics.revenue)} accent={C.accent} sub="Fixed + extra fees, accrued" />
             </div>
-            {hoursByEmployee.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours logged in this period.</div> : (
+            {!isAdmin ? null : hoursByEmployee.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>No hours logged in this period.</div> : (
               <TableShell headers={["Employee", "Hours", ...CATEGORIES.map((c) => CATEGORY_LABELS[c])]}>
                 {hoursByEmployee.map(({ emp, hours }) => (
                   <tr key={emp.id}>
@@ -7430,7 +7432,8 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
 
   // Quick activity figures for the header: hours & revenue year to date.
   const yearStart = new Date(TODAY.getFullYear(), 0, 1);
-  const ytdEntries = entries.filter((e) => e.clientId === client.id && fromKey(e.date) >= yearStart && fromKey(e.date) <= TODAY);
+  const isAdminUser = user.role === "admin";
+  const ytdEntries = isAdminUser ? entries.filter((e) => e.clientId === client.id && fromKey(e.date) >= yearStart && fromKey(e.date) <= TODAY) : [];
   const ytdHours = ytdEntries.reduce((s, e) => s + e.hours, 0);
   const ytdRevenue = periodClientMetrics(client, ytdEntries, yearStart, TODAY).revenue;
 
@@ -7502,7 +7505,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     { key: "contacts", label: `Contacts (${myContacts.length})` },
     { key: "notes", label: `Notes (${myNotes.length})` },
     { key: "tasks", label: `Tasks (${openTasks.length} open)` },
-  ];
+  ].filter((t) => isAdminUser || !["agreement", "dd", "documents"].includes(t.key));
   const primary = myContacts.find((x) => x.isPrimary);
 
   return (
@@ -7566,7 +7569,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
 
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <StatCard label="Status" value={client.endDate && client.endDate <= toKey(TODAY) ? "Ended" : client.active ? "Active" : "Inactive"} sub={client.endDate ? `End date ${client.endDate}` : `Fixed fee ${client.fixedFee ? fmtEur(client.fixedFee) + "/mo" : "—"}`} />
-        <StatCard label={`Hours ${TODAY.getFullYear()} YTD`} value={ytdHours.toFixed(1) + "h"} sub="Logged by the team" />
+        {isAdminUser && <StatCard label={`Hours ${TODAY.getFullYear()} YTD`} value={ytdHours.toFixed(1) + "h"} sub="Logged by the team" />}
         <StatCard label={`Revenue ${TODAY.getFullYear()} YTD`} value={fmtEur(ytdRevenue)} accent={C.accent} sub="Fixed + extra fees" />
         <StatCard label="Open tasks" value={String(openTasks.length)} accent={openTasks.some(taskIsOverdue) ? C.danger : undefined} sub={openTasks.filter(taskIsOverdue).length ? `${openTasks.filter(taskIsOverdue).length} overdue` : "None overdue"} />
         {primary && <StatCard label="Primary contact" value={primary.name} sub={[primary.phone, primary.email].filter(Boolean).join(" · ") || primary.role || ""} />}
@@ -7679,7 +7682,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
         </Panel>
       )}
 
-      {tab === "fees" && <ClientFeesTab client={client} entries={entries} employees={employees} refetchClients={refetchClients} />}
+      {tab === "fees" && <ClientFeesTab client={client} entries={isAdminUser ? entries : []} employees={employees} refetchClients={refetchClients} isAdmin={isAdminUser} />}
       {tab === "agreement" && <ClientAgreementTab user={user} client={client} aml={aml} firm={firm} saveFirm={saveFirm} employees={employees} contacts={myContacts} ubos={ubos} documents={documents} refetchClients={refetchClients} refetchDocuments={refetchDocuments} />}
       {tab === "documents" && <ClientDocumentsTab user={user} client={client} documents={documents} employees={employees} refetchDocuments={refetchDocuments} aml={aml} ubos={ubos} contacts={myContacts} firm={firm} />}
       {tab === "dd" && (
@@ -8227,10 +8230,10 @@ export default function App() {
         {user.role === "admin" && view === "timesheets" && (
           <AdminTimesheets employees={employees} clients={clients} entries={entries} refetchEntries={refetchEntries} lockedWeeks={lockedWeeks} refetchLockedWeeks={refetchLockedWeeks} leaveRequests={leaveRequests} />
         )}
-        {user.role === "admin" && view === "clients" && (
+        {view === "clients" && (
           <AdminClients user={user} clients={clients} refetchClients={refetchClients} entries={entries} onOpenCard={openClientCard} tasks={tasks} templates={templates} refetchTasks={refetchTasks} amlRecords={amlRecords} employees={employees} />
         )}
-        {user.role === "admin" && view === "clientcard" && (
+        {view === "clientcard" && (
           <ClientCard user={user} client={clients.find((c) => c.id === cardClientId)} employees={employees} contacts={contacts} notes={notes} tasks={tasks} entries={entries} templates={templates}
             aml={amlRecords.find((a) => a.clientId === cardClientId) || null} ubos={ubos.filter((u) => u.clientId === cardClientId)} refetchDueDiligence={refetchDueDiligence}
             documents={documents.filter((d) => d.clientId === cardClientId)} refetchDocuments={refetchDocuments} firm={firm} saveFirm={saveFirm} initialTab={cardTab}
@@ -8258,7 +8261,7 @@ export default function App() {
           <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
             amlFirm={amlFirm} saveAmlFirm={saveAmlFirm} refetchCases={refetchAmlCases} refetchRequests={refetchAuthorityRequests} onOpenCard={openClientCard} />
         )}
-        {user.role === "admin" && view === "billing" && (
+        {view === "billing" && (
           <AdminBilling clients={clients} billingStatuses={billingStatuses} refetchBilling={refetchBilling} />
         )}
       </div>
