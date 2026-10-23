@@ -2346,6 +2346,7 @@ function TeamCalendar({ employees, leaveRequests }) {
 function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, operatingExpenses = [], tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
+  const [lossModal, setLossModal] = useState(false);
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, billingPanel: true, ddPanel: true, compliancePanel: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
@@ -2509,6 +2510,17 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     const grossProfit = c.revenue - c.cost, overhead = clientOverhead[c.id], operatingProfitC = grossProfit - overhead;
     return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
   }).sort((a, b) => a.operatingMargin - b.operatingMargin);
+  // Clients with negative operating profit in the selected period — shown in a pop-up.
+  const lossClients = clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
+  const lossTotal = lossClients.reduce((s, r) => s + r.operatingProfit, 0);
+  useEffect(() => {
+    // Opens by itself once per browser session when the dashboard loads.
+    if (lossClients.length === 0) return;
+    let seen = false;
+    try { seen = sessionStorage.getItem("gloria_loss_popup") === "1"; } catch { /* ignore */ }
+    if (!seen) { setLossModal(true); try { sessionStorage.setItem("gloria_loss_popup", "1"); } catch { /* ignore */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lossClients.length > 0]);
 
   // Revenue, labor cost and profit per cost center for the period. The
   // rows add up to the same totals as the cards above; "Unallocated" only
@@ -2737,6 +2749,35 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
           </div>
         }
       />
+
+      {lossClients.length > 0 && (
+        <div onClick={() => setLossModal(true)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 10, background: C.dangerSoft || "#fdecec", border: `1px solid ${C.danger}`, borderRadius: 8, padding: "9px 14px", marginBottom: 18, fontFamily: sans, fontSize: 13, color: C.danger, fontWeight: 600 }}>
+          <AlertTriangle size={16} /> {lossClients.length} {lossClients.length === 1 ? "client has" : "clients have"} negative operating profit in this period ({fmtEur(lossTotal)}) — click to see which
+        </div>
+      )}
+      {lossModal && (
+        <Modal title={`Clients with negative operating profit — ${periodLabel(period, rangeStart, rangeEnd)}`} onClose={() => setLossModal(false)} width={760}>
+          {lossClients.length === 0 ? <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>No client has negative operating profit in this period.</div> : (
+            <>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Operating profit = revenue − labor cost of the client's hours − allocated overhead. Total loss: <strong style={{ color: C.danger }}>{fmtEur(lossTotal)}</strong>. Change the period on the dashboard to see another month.</div>
+              <TableShell headers={["Client", "Hours", "Revenue", "Gross profit", "Overhead", "Operating profit", "Margin"]}>
+                {lossClients.map((r) => (
+                  <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => { setLossModal(false); onOpenCard && onOpenCard(r.id); }}>
+                    <Td>{r.name}</Td>
+                    <Td mono>{r.hours.toFixed(1)}</Td>
+                    <Td mono>{fmtEur(r.revenue)}</Td>
+                    <Td mono style={{ color: r.grossProfit < 0 ? C.danger : undefined }}>{fmtEur(r.grossProfit)}</Td>
+                    <Td mono>{fmtEur(r.overhead)}</Td>
+                    <Td mono style={{ fontWeight: 700, color: C.danger }}>{fmtEur(r.operatingProfit)}</Td>
+                    <Td mono style={{ color: C.danger }}>{r.operatingMargin.toFixed(0)}%</Td>
+                  </tr>
+                ))}
+              </TableShell>
+              <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 8 }}>Click a client to open its card.</div>
+            </>
+          )}
+        </Modal>
+      )}
 
       {config.statCards && (
         <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
