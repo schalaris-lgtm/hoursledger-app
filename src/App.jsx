@@ -2339,6 +2339,89 @@ function TeamCalendar({ employees, leaveRequests }) {
   );
 }
 
+// Client profitability (gross and operating margin) for the window in which
+// BOTH sides are real: from the first logged hour (hours are only recorded since
+// time tracking started, while salaries and fees accrue from their effective dates
+// — spreading a full year of salaries over a few weeks of hours inflated the cost/h)
+// up to today (no accrual of future days).
+function computeClientProfitability({ employees, clients, entries, operatingExpenses, rentalExpenses, periodStart, periodEnd }) {
+  let first = null;
+  entries.forEach((e) => { const d = fromKey(e.date); if (!first || d < first) first = d; });
+  let rangeStart = first && first > periodStart ? first : periodStart;
+  let rangeEnd = periodEnd > TODAY ? TODAY : periodEnd;
+  if (rangeStart > rangeEnd) { rangeStart = periodStart; rangeEnd = periodEnd; }
+  const clamped = toKey(rangeStart) !== toKey(periodStart) || toKey(rangeEnd) !== toKey(periodEnd);
+  const rangeEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= rangeStart && d <= rangeEnd; });
+  const employeeCosts = employees.filter((e) => employeeBilledInRange(e, rangeStart, rangeEnd)).map((emp) => {
+    const empEntries = rangeEntries.filter((e) => e.employeeId === emp.id);
+    return { id: emp.id, department: emp.department || DEFAULT_DEPARTMENT, entries: empEntries, hours: empEntries.reduce((s, e) => s + e.hours, 0), cost: periodEmployeeCost(emp, rangeStart, rangeEnd) };
+  });
+  const byClient = clients.filter((c) => clientBilledInRange(c, rangeStart, rangeEnd)).map((c) => {
+    const clientEntries = rangeEntries.filter((e) => e.clientId === c.id);
+    const hrs = clientEntries.reduce((s, e) => s + e.hours, 0);
+    const { revenue, revenueByCostCenter } = periodClientMetrics(c, clientEntries, rangeStart, rangeEnd);
+    const cost = employeeCosts.reduce((sum, ec) => {
+      if (ec.hours <= 0) return sum;
+      const empHrsForClient = clientEntries.filter((e) => e.employeeId === ec.id).reduce((s, e) => s + e.hours, 0);
+      return sum + ec.cost * (empHrsForClient / ec.hours);
+    }, 0);
+    return { ...c, hours: hrs, revenue, revenueByCostCenter, cost };
+  });
+  const revenueByCC = emptyByCC();
+  byClient.forEach((c) => { Object.keys(revenueByCC).forEach((cc) => { revenueByCC[cc] += c.revenueByCostCenter?.[cc] || 0; }); });
+  employeeCosts.forEach((ec) => {
+    const emp = employees.find((e) => e.id === ec.id);
+    ec.byCostCenter = employeeCostByCostCenter(emp, ec.cost, ec.entries, revenueByCC);
+  });
+  const opex = opexForRange(operatingExpenses, rangeStart, rangeEnd, rentalExpenses);
+  // Profitability by client — gross margin and operating margin.
+  //  • Gross margin = (revenue − labor cost of the hours spent on the client) ÷ revenue.
+  //  • Operating margin also charges each client its share of the OVERHEAD, allocated by cost
+  //    center with the client's HOURS as the driver:
+  //      pool of a cost center = labor cost not charged to clients (internal activities, hours not
+  //                              logged on a client) + operating expenses of that cost center
+  //      client's share        = pool × client hours in that cost center ÷ all client hours in it
+  //    Accounting / Tax / Payroll / Other use the hours logged with that category; Director,
+  //    Finance, Rental and General (company-wide) use the client's total hours. The rows add up
+  //    to the company's operating profit.
+  const OVERHEAD_CCS = [...COST_CENTERS, "general"];
+  const clientIdsInRange = new Set(byClient.map((c) => c.id));
+  const billed = byClient.filter((c) => c.revenue > 0.005);
+  const ovhDriver = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, {}]));
+  billed.forEach((c) => {
+    const ents = rangeEntries.filter((e) => e.clientId === c.id);
+    const total = ents.reduce((s, e) => s + e.hours, 0);
+    OVERHEAD_CCS.forEach((cc) => { ovhDriver[cc][c.id] = CATEGORIES.includes(cc) ? ents.filter((e) => (CATEGORIES.includes(e.category) ? e.category : "other") === cc).reduce((s, e) => s + e.hours, 0) : total; });
+  });
+  const ovhDriverTotal = (cc) => Object.values(ovhDriver[cc]).reduce((s, v) => s + v, 0);
+  const ovhPool = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, 0]));
+  employeeCosts.forEach((ec) => {
+    if (!(ec.cost > 0)) return;
+    const attributed = ec.hours > 0 ? ec.cost * (ec.entries.filter((e) => e.clientId && clientIdsInRange.has(e.clientId)).reduce((s, e) => s + e.hours, 0) / ec.hours) : 0;
+    const unattributed = ec.cost - attributed;
+    Object.entries(ec.byCostCenter).forEach(([cc, v]) => { ovhPool[cc === UNALLOCATED ? "general" : cc] += unattributed * (v / ec.cost); });
+  });
+  const spreadPool = (amount, keys, weightOf) => {
+    const w = keys.map(weightOf), t = w.reduce((s, x) => s + x, 0);
+    keys.forEach((k, i) => { ovhPool[k] += t > 0 ? amount * (w[i] / t) : amount / keys.length; });
+  };
+  spreadPool(opex.byDepartment.accounting_team || 0, CATEGORIES, (cc) => ovhDriverTotal(cc));
+  spreadPool(opex.byDepartment.management_team || 0, ["director", "finance"], (cc) => revenueByCC[cc] || 0);
+  ovhPool.rental += opex.byDepartment.rental || 0;
+  ovhPool.general += opex.byDepartment[OPEX_GENERAL] || 0;
+  const clientOverhead = Object.fromEntries(billed.map((c) => [c.id, 0]));
+  const overheadByCC = OVERHEAD_CCS.map((cc) => {
+    const pool = ovhPool[cc], hours = ovhDriverTotal(cc);
+    billed.forEach((c) => { clientOverhead[c.id] += hours > 0 ? pool * (ovhDriver[cc][c.id] / hours) : pool / billed.length; });
+    return { key: cc, label: cc === "general" ? "General (company-wide)" : costCenterLabel(cc), pool, hours, perHour: hours > 0 ? pool / hours : null };
+  }).filter((r) => Math.abs(r.pool) > 0.005);
+  const clientProfitRows = billed.map((c) => {
+    const grossProfit = c.revenue - c.cost, overhead = clientOverhead[c.id], operatingProfitC = grossProfit - overhead;
+    return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
+  }).sort((a, b) => a.operatingMargin - b.operatingMargin);
+  return { clientProfitRows, overheadByCC, rangeStart, rangeEnd, clamped };
+}
+
 /* ---------------------------------------------------------------------- */
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
@@ -2465,51 +2548,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     unallocatedCostByDepartment[ec.department] = (unallocatedCostByDepartment[ec.department] || 0) + (ec.byCostCenter[UNALLOCATED] || 0);
   });
 
-  // Profitability by client — gross margin and operating margin.
-  //  • Gross margin = (revenue − labor cost of the hours spent on the client) ÷ revenue.
-  //  • Operating margin also charges each client its share of the OVERHEAD, allocated by cost
-  //    center with the client's HOURS as the driver:
-  //      pool of a cost center = labor cost not charged to clients (internal activities, hours not
-  //                              logged on a client) + operating expenses of that cost center
-  //      client's share        = pool × client hours in that cost center ÷ all client hours in it
-  //    Accounting / Tax / Payroll / Other use the hours logged with that category; Director,
-  //    Finance, Rental and General (company-wide) use the client's total hours. The rows add up
-  //    to the company's operating profit.
-  const OVERHEAD_CCS = [...COST_CENTERS, "general"];
-  const clientIdsInRange = new Set(byClient.map((c) => c.id));
-  const billed = byClient.filter((c) => c.revenue > 0.005);
-  const ovhDriver = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, {}]));
-  billed.forEach((c) => {
-    const ents = rangeEntries.filter((e) => e.clientId === c.id);
-    const total = ents.reduce((s, e) => s + e.hours, 0);
-    OVERHEAD_CCS.forEach((cc) => { ovhDriver[cc][c.id] = CATEGORIES.includes(cc) ? ents.filter((e) => (CATEGORIES.includes(e.category) ? e.category : "other") === cc).reduce((s, e) => s + e.hours, 0) : total; });
-  });
-  const ovhDriverTotal = (cc) => Object.values(ovhDriver[cc]).reduce((s, v) => s + v, 0);
-  const ovhPool = Object.fromEntries(OVERHEAD_CCS.map((cc) => [cc, 0]));
-  employeeCosts.forEach((ec) => {
-    if (!(ec.cost > 0)) return;
-    const attributed = ec.hours > 0 ? ec.cost * (ec.entries.filter((e) => e.clientId && clientIdsInRange.has(e.clientId)).reduce((s, e) => s + e.hours, 0) / ec.hours) : 0;
-    const unattributed = ec.cost - attributed;
-    Object.entries(ec.byCostCenter).forEach(([cc, v]) => { ovhPool[cc === UNALLOCATED ? "general" : cc] += unattributed * (v / ec.cost); });
-  });
-  const spreadPool = (amount, keys, weightOf) => {
-    const w = keys.map(weightOf), t = w.reduce((s, x) => s + x, 0);
-    keys.forEach((k, i) => { ovhPool[k] += t > 0 ? amount * (w[i] / t) : amount / keys.length; });
-  };
-  spreadPool(opex.byDepartment.accounting_team || 0, CATEGORIES, (cc) => ovhDriverTotal(cc));
-  spreadPool(opex.byDepartment.management_team || 0, ["director", "finance"], (cc) => revenueByCC[cc] || 0);
-  ovhPool.rental += opex.byDepartment.rental || 0;
-  ovhPool.general += opex.byDepartment[OPEX_GENERAL] || 0;
-  const clientOverhead = Object.fromEntries(billed.map((c) => [c.id, 0]));
-  const overheadByCC = OVERHEAD_CCS.map((cc) => {
-    const pool = ovhPool[cc], hours = ovhDriverTotal(cc);
-    billed.forEach((c) => { clientOverhead[c.id] += hours > 0 ? pool * (ovhDriver[cc][c.id] / hours) : pool / billed.length; });
-    return { key: cc, label: cc === "general" ? "General (company-wide)" : costCenterLabel(cc), pool, hours, perHour: hours > 0 ? pool / hours : null };
-  }).filter((r) => Math.abs(r.pool) > 0.005);
-  const clientProfitRows = billed.map((c) => {
-    const grossProfit = c.revenue - c.cost, overhead = clientOverhead[c.id], operatingProfitC = grossProfit - overhead;
-    return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
-  }).sort((a, b) => a.operatingMargin - b.operatingMargin);
+  const { clientProfitRows, overheadByCC, rangeStart: profStart, rangeEnd: profEnd, clamped: profClamped } = computeClientProfitability({ employees, clients, entries, operatingExpenses, rentalExpenses, periodStart: rangeStart, periodEnd: rangeEnd });
   // Clients with negative operating profit in the selected period — shown in a pop-up.
   const lossClients = clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
   const lossTotal = lossClients.reduce((s, r) => s + r.operatingProfit, 0);
@@ -2759,7 +2798,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         <Modal title={`Clients with negative operating profit — ${periodLabel(period, rangeStart, rangeEnd)}`} onClose={() => setLossModal(false)} width={760}>
           {lossClients.length === 0 ? <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>No client has negative operating profit in this period.</div> : (
             <>
-              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Operating profit = revenue − labor cost of the client's hours − allocated overhead. Total loss: <strong style={{ color: C.danger }}>{fmtEur(lossTotal)}</strong>. Change the period on the dashboard to see another month.</div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>{profClamped && <>Window: <strong>{fmtShort(profStart)} – {fmtShort(profEnd)}</strong> (from the first logged hours until today). </>}Operating profit = revenue − labor cost of the client's hours − allocated overhead. Total loss: <strong style={{ color: C.danger }}>{fmtEur(lossTotal)}</strong>. Change the period on the dashboard to see another month.</div>
               <TableShell headers={["Client", "Hours", "Revenue", "Gross profit", "Overhead", "Operating profit", "Margin"]}>
                 {lossClients.map((r) => (
                   <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => { setLossModal(false); onOpenCard && onOpenCard(r.id); }}>
@@ -3310,6 +3349,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Profitability by client — gross and operating margin</div>
             <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
               Gross margin = (revenue − labor cost of the hours on the client) ÷ revenue. Operating margin also charges each client its share of the overhead (cost of internal hours + operating expenses), allocated by cost center in proportion to the hours spent on the client — see the table below. Sorted from lowest operating margin.
+              {profClamped && <> <strong>Calculated for {fmtShort(profStart)} – {fmtShort(profEnd)}</strong> (from the first logged hours until today), so that revenue, salaries and hours cover the same days.</>}
             </div>
             <TableShell headers={["Client", "Hours", "Revenue", "Labor cost", "Gross profit", "Gross margin", "Overhead", "Operating profit", "Operating margin"]}>
               {clientProfitRows.map((r) => (
