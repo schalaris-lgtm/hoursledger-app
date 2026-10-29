@@ -1068,6 +1068,7 @@ function Sidebar({ user, view, setView }) {
     { key: "reports", label: "Reports", icon: SlidersHorizontal },
     { key: "billing", label: "Billing", icon: Receipt },
     { key: "compliance", label: "AML Compliance", icon: AlertTriangle },
+    { key: "presence", label: "Slack presence", icon: UserRound },
   ];
   const items = user.role === "admin" ? adminNav : employeeNav;
   return (
@@ -3907,7 +3908,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
                 "Fee → Other note": c.feeSplitNote || "",
               })),
             }])}>Export to Excel</Btn>
-            {user.role === "admin" && <Btn variant="secondary" onClick={() => setShowAmlRegister((v) => !v)}>{showAmlRegister ? "Hide AML register" : "AML register"}</Btn>}
+            <Btn variant="secondary" onClick={() => setShowAmlRegister((v) => !v)}>{showAmlRegister ? "Hide AML register" : "AML register"}</Btn>
             <Btn icon={Plus} onClick={openNew}>Add client</Btn>
           </div>
         } />
@@ -5550,6 +5551,102 @@ function billingLineStatus(line, st) {
   return "pending";
 }
 
+/* ---------------------------------------------------------------------- */
+/* Slack presence — admin only (RLS: only admins can read presence_day)    */
+/* ---------------------------------------------------------------------- */
+
+function AdminPresence({ employees, entries }) {
+  const [days, setDays] = useState(14);
+  const [empId, setEmpId] = useState("all");
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const from = toKey(addDays(TODAY, -days));
+      const { data, error } = await supabase.from("presence_day").select("*").gte("day", from).order("day", { ascending: false });
+      if (!live) return;
+      if (error) { setErr(error.message); setRows([]); } else { setErr(""); setRows(data || []); }
+    })();
+    return () => { live = false; };
+  }, [days]);
+  const POLL_MIN = 10;
+  const hm = (iso) => iso ? new Date(iso).toLocaleTimeString("en-GB", { timeZone: "Europe/Athens", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+  const mins = (iso) => { const [a, b] = hm(iso).split(":").map(Number); return a * 60 + b; };
+  const mm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m % 60)).padStart(2, "0")}`;
+  const name = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const declared = (id, day) => entries.filter((e) => e.employeeId === id && e.date === day).reduce((s, e) => s + e.hours, 0);
+  const list = (rows || []).filter((r) => empId === "all" || r.employee_id === empId).sort((a, b) => b.day.localeCompare(a.day) || name(a.employee_id).localeCompare(name(b.employee_id)));
+  const summary = employees.filter((e) => e.active).map((e) => {
+    const mine = (rows || []).filter((r) => r.employee_id === e.id && r.first_active);
+    if (!mine.length) return null;
+    const firsts = mine.map((r) => mins(r.first_active));
+    const active = mine.reduce((s, r) => s + (r.active_polls * POLL_MIN) / 60, 0);
+    const decl = mine.reduce((s, r) => s + declared(e.id, r.day), 0);
+    return { id: e.id, name: e.name, n: mine.length, avg: firsts.reduce((s, x) => s + x, 0) / firsts.length, earliest: Math.min(...firsts), latest: Math.max(...firsts), active, decl, ratio: decl > 0 ? active / decl : null };
+  }).filter(Boolean);
+  const totActive = summary.reduce((s, r) => s + r.active, 0), totDecl = summary.reduce((s, r) => s + r.decl, 0);
+  return (
+    <div>
+      <PageHeader title="Slack presence" sub="When each person was first seen as active in Slack. Visible to managers only. Indicative — it is not proof of work (Slack shows 'away' after ~10 minutes of inactivity on desktop)."
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <select style={{ ...inputStyle, width: "auto" }} value={empId} onChange={(e) => setEmpId(e.target.value)}>
+              <option value="all">All employees</option>
+              {employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            <select style={{ ...inputStyle, width: "auto" }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              {[7, 14, 30, 60, 90].map((n) => <option key={n} value={n}>Last {n} days</option>)}
+            </select>
+          </div>
+        } />
+      {err && <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${C.danger}` }}><div style={{ fontFamily: sans, fontSize: 13, color: C.danger }}>Couldn't load presence data: {err}. Have you run presence.sql?</div></Panel>}
+      {rows === null ? <div style={{ fontFamily: sans, fontSize: 13, color: C.inkMuted }}>Loading…</div> : (
+        <>
+          {summary.length > 0 && (
+            <Panel style={{ marginBottom: 18 }}>
+              <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Overview — Slack presence vs declared hours</div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Same days only (days with presence data). Active ÷ declared far below 100% can simply mean work done outside Slack — use it as a prompt for a conversation, not as proof.</div>
+              <div style={{ display: "flex", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
+                <StatCard label="Declared hours" value={totDecl.toFixed(1) + "h"} sub="on days with presence data" />
+                <StatCard label="Active in Slack (est.)" value={totActive.toFixed(1) + "h"} sub={totDecl > 0 ? `${Math.round((totActive / totDecl) * 100)}% of declared` : ""} />
+              </div>
+              <TableShell headers={["Employee", "Days", "Average first active", "Earliest", "Latest", "Declared", "Active (est.)", "Active ÷ declared"]}>
+                {summary.sort((a, b) => a.avg - b.avg).map((r) => (
+                  <tr key={r.id}><Td>{r.name}</Td><Td mono>{r.n}</Td><Td mono style={{ fontWeight: 700 }}>{mm(r.avg)}</Td><Td mono>{mm(r.earliest)}</Td><Td mono>{mm(r.latest)}</Td>
+                    <Td mono>{r.decl.toFixed(1)}h</Td><Td mono>{r.active.toFixed(1)}h</Td>
+                    <Td mono style={{ fontWeight: 700, color: r.ratio != null && r.ratio < 0.5 ? C.danger : undefined }}>{r.ratio != null ? Math.round(r.ratio * 100) + "%" : "—"}</Td></tr>
+                ))}
+              </TableShell>
+            </Panel>
+          )}
+          <Panel>
+            {list.length === 0 ? <EmptyState icon={Clock} title="No presence data yet" /> : (
+              <TableShell headers={["Date", "Employee", "First active", "Last active", "Active (est.)", "Declared hours", "Declared − active"]}>
+                {list.map((r) => {
+                  const act = (r.active_polls * POLL_MIN) / 60, dec = declared(r.employee_id, r.day), diff = dec - act;
+                  return (
+                    <tr key={r.employee_id + r.day}>
+                      <Td mono>{r.day.split("-").reverse().join("/")}</Td>
+                      <Td>{name(r.employee_id)}</Td>
+                      <Td mono style={{ fontWeight: 700 }}>{hm(r.first_active)}</Td>
+                      <Td mono>{hm(r.last_active)}</Td>
+                      <Td mono>{act.toFixed(1)}h</Td>
+                      <Td mono>{dec.toFixed(1)}h</Td>
+                      <Td mono style={{ color: dec >= 4 && diff > 3 ? C.danger : C.inkMuted }}>{dec > 0 ? (diff >= 0 ? "+" : "") + diff.toFixed(1) + "h" : "—"}</Td>
+                    </tr>
+                  );
+                })}
+              </TableShell>
+            )}
+            <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 8 }}>Polled every 10 minutes, Mon–Fri 07:00–21:00 (Athens). Times therefore have ~10 minutes accuracy. Active time is estimated as number of active checks × 10 min.</div>
+          </Panel>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AdminBilling({ clients, billingStatuses, refetchBilling }) {
   const [viewPeriod, setViewPeriod] = useState("month");
   const [viewAnchor, setViewAnchor] = useState(TODAY);
@@ -6864,6 +6961,24 @@ function buildAgreementHtml({ client, aml, firm, employees, contacts }) {
   <div class="footer">Παράχθηκε από το GLORIA στις ${new Date().toLocaleString("el-GR")} · ${client.contractStatus === "signed" ? "Τελικό κείμενο" : "Σχέδιο — δεν έχει υπογραφεί"}</div>`;
 }
 
+// Shows the error on the page instead of a blank screen when one tab fails to render.
+class TabErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err) { console.error("Tab failed to render:", err); }
+  componentDidUpdate(prev) { if (this.state.err && prev.resetKey !== this.props.resetKey) this.setState({ err: null }); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <Panel style={{ borderLeft: `4px solid ${C.danger}` }}>
+        <div style={{ fontFamily: sans, fontSize: 13, color: C.danger, fontWeight: 700 }}>This tab could not be displayed.</div>
+        <div style={{ fontFamily: mono, fontSize: 12, color: C.ink, marginTop: 6, whiteSpace: "pre-wrap" }}>{String(this.state.err?.message || this.state.err)}</div>
+        <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginTop: 6 }}>Send this message to your developer — the other tabs keep working.</div>
+      </Panel>
+    );
+  }
+}
+
 function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, contacts, ubos, documents, refetchClients, refetchDocuments }) {
   const fromClient = () => ({
     special: client.contractSpecialTerms || "", payment: client.contractPaymentTerms || "", servicesText: client.contractServicesText || CONTRACT_DEFAULT_SERVICES,
@@ -6919,7 +7034,7 @@ function ClientAgreementTab({ user, client, aml, firm, saveFirm, employees, cont
             {missing.length > 0 && <div style={{ color: C.warn, marginTop: 4 }}>Missing for a complete draft: {missing.join(", ")}.</div>}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Btn variant="secondary" onClick={() => setFirmEdit({ ...DEFAULT_FIRM, ...firm })}>Firm details</Btn>
+            {user.role === "admin" && <Btn variant="secondary" onClick={() => setFirmEdit({ ...DEFAULT_FIRM, ...firm })}>Firm details</Btn>}
             <Btn icon={Receipt} onClick={preview}>Preview / Save as PDF</Btn>
           </div>
         </div>
@@ -7586,7 +7701,7 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     { key: "contacts", label: `Contacts (${myContacts.length})` },
     { key: "notes", label: `Notes (${myNotes.length})` },
     { key: "tasks", label: `Tasks (${openTasks.length} open)` },
-  ].filter((t) => isAdminUser || !["agreement", "dd", "documents"].includes(t.key));
+  ];
   const primary = myContacts.find((x) => x.isPrimary);
 
   return (
@@ -7764,10 +7879,10 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
       )}
 
       {tab === "fees" && <ClientFeesTab client={client} entries={isAdminUser ? entries : []} employees={employees} refetchClients={refetchClients} isAdmin={isAdminUser} />}
-      {tab === "agreement" && <ClientAgreementTab user={user} client={client} aml={aml} firm={firm} saveFirm={saveFirm} employees={employees} contacts={myContacts} ubos={ubos} documents={documents} refetchClients={refetchClients} refetchDocuments={refetchDocuments} />}
+      {tab === "agreement" && <TabErrorBoundary resetKey={client.id}><ClientAgreementTab user={user} client={client} aml={aml} firm={firm} saveFirm={saveFirm} employees={employees} contacts={myContacts} ubos={ubos} documents={documents} refetchClients={refetchClients} refetchDocuments={refetchDocuments} /></TabErrorBoundary>}
       {tab === "documents" && <ClientDocumentsTab user={user} client={client} documents={documents} employees={employees} refetchDocuments={refetchDocuments} aml={aml} ubos={ubos} contacts={myContacts} firm={firm} />}
       {tab === "dd" && (
-        <DueDiligenceTab user={user} client={client} employees={employees} aml={aml} ubos={ubos} tasks={tasks} documents={documents} refetchDocuments={refetchDocuments} refetchDueDiligence={refetchDueDiligence} refetchTasks={refetchTasks} />
+        <TabErrorBoundary resetKey={client.id}><DueDiligenceTab user={user} client={client} employees={employees} aml={aml} ubos={ubos} tasks={tasks} documents={documents} refetchDocuments={refetchDocuments} refetchDueDiligence={refetchDueDiligence} refetchTasks={refetchTasks} /></TabErrorBoundary>
       )}
 
       {tab === "tasks" && (
@@ -8341,6 +8456,9 @@ export default function App() {
         {user.role === "admin" && view === "compliance" && (
           <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
             amlFirm={amlFirm} saveAmlFirm={saveAmlFirm} refetchCases={refetchAmlCases} refetchRequests={refetchAuthorityRequests} onOpenCard={openClientCard} />
+        )}
+        {user.role === "admin" && view === "presence" && (
+          <AdminPresence employees={employees} entries={entries} />
         )}
         {view === "billing" && (
           <AdminBilling clients={clients} billingStatuses={billingStatuses} refetchBilling={refetchBilling} />
