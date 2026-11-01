@@ -2435,10 +2435,109 @@ function computeClientProfitability({ employees, clients, entries, operatingExpe
 /* Admin: Dashboard                                                        */
 /* ---------------------------------------------------------------------- */
 
-function AdminDashboard({ employees, clients, entries, rentalProperties, rentalExpenses, operatingExpenses = [], tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
+/* ---------------------------------------------------------------------- */
+/* Executive report pop-up — snapshot of KPIs and controls (admin Dashboard) */
+/* ---------------------------------------------------------------------- */
+
+function ExecutiveReportModal({ onClose, onOpenLoss, kpis, periodLabelText, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, lossCount, lossTotal, onOpenCard }) {
+  const hol = holidayMapForYears([TODAY.getFullYear() - 1, TODAY.getFullYear()]);
+  const isWork = (d) => !isWeekend(d) && !hol.has(toKey(d));
+  let lastDay = addDays(TODAY, -1); while (!isWork(lastDay)) lastDay = addDays(lastDay, -1);
+  const lastKey = toKey(lastDay);
+  const onLeave = (empId, key) => leaveRequests.some((r) => r.status === "approved" && r.employeeId === empId && r.startDate <= key && key <= r.endDate);
+  const staff = employees.filter((e) => e.active && (e.weeklyHours || 0) > 0 && employeeBilledInRange(e, lastDay, lastDay));
+  const UNDER = 0.75, OVER_EXTRA = 3;
+  const dayRows = staff.map((e) => {
+    const exp = (e.weeklyHours || 40) / 5, h = entries.filter((x) => x.employeeId === e.id && x.date === lastKey).reduce((s, x) => s + x.hours, 0);
+    const leave = onLeave(e.id, lastKey);
+    const status = leave ? "leave" : h === 0 ? "missing" : h < exp * UNDER ? "under" : h > exp + OVER_EXTRA ? "over" : "ok";
+    return { e, exp, h, status };
+  });
+  const flagged = dayRows.filter((r) => ["missing", "under", "over"].includes(r.status));
+  const dayTotal = dayRows.reduce((s, r) => s + r.h, 0), dayExpected = dayRows.filter((r) => r.status !== "leave").reduce((s, r) => s + r.exp, 0);
+
+  // Non-chargeable time (internal activities) above 1 hour on the last working day
+  const nonChargeable = staff.map((e) => {
+    const mine = entries.filter((x) => x.employeeId === e.id && x.date === lastKey && x.activity);
+    const byAct = {}; mine.forEach((x) => { byAct[x.activity] = (byAct[x.activity] || 0) + x.hours; });
+    return { e, hours: mine.reduce((s, x) => s + x.hours, 0), byAct };
+  }).filter((r) => r.hours > 1);
+
+  const weekStartPrev = addDays(startOfWeek(TODAY), -7), wkKey = toKey(weekStartPrev);
+  const unlocked = employees.filter((e) => e.active && !lockedWeeks.includes(`${e.id}|${wkKey}`) && entries.some((x) => x.employeeId === e.id && fromKey(x.date) >= weekStartPrev && fromKey(x.date) <= addDays(weekStartPrev, 6)));
+
+  const monthStart = new Date(TODAY.getFullYear(), TODAY.getMonth(), 1);
+  const live = clients.filter((c) => c.active && c.lifecycle === "live" && (!c.endDate || c.endDate >= toKey(TODAY)));
+  const mtd = live.map((c) => {
+    const ents = entries.filter((x) => x.clientId === c.id && fromKey(x.date) >= monthStart && fromKey(x.date) <= TODAY);
+    const m = periodClientMetrics(c, ents, monthStart, TODAY);
+    const hours = ents.reduce((s, x) => s + x.hours, 0);
+    return { c, hours, alloc: m.allocation, revenue: m.revenue };
+  });
+  const nearAlloc = mtd.filter((r) => r.alloc > 0 && r.hours / r.alloc >= 0.85).sort((a, b) => b.hours / b.alloc - a.hours / a.alloc);
+  const lowRate = mtd.filter((r) => r.hours >= 5 && r.revenue > 0).map((r) => ({ ...r, rate: r.revenue / r.hours })).sort((a, b) => a.rate - b.rate).slice(0, 5);
+
+  const prevMonth = (() => { const d = new Date(TODAY.getFullYear(), TODAY.getMonth() - 1, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; })();
+  const withFee = live.filter((c) => (currentFeeOf(c).fixedFee || 0) > 0);
+  const bFor = (cid) => billingStatuses.find((b) => b.clientId === cid && b.kind === "fixed" && b.month === prevMonth);
+  const notInvoiced = withFee.filter((c) => !bFor(c.id)?.invoicedDate);
+  const unpaid = withFee.filter((c) => bFor(c.id)?.invoicedDate && !bFor(c.id)?.paidDate);
+  const overdueTasks = tasks.filter(taskIsOverdue);
+  const pendingLeave = leaveRequests.filter((r) => r.status === "pending");
+  const nameOf = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const h1 = (n) => n.toFixed(1) + "h";
+  const Sec = ({ title, children }) => <div style={{ marginTop: 16 }}><div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13.5, color: C.ink, marginBottom: 6 }}>{title}</div>{children}</div>;
+  const Line = ({ tone, children }) => <div style={{ fontFamily: sans, fontSize: 12.5, color: tone === "bad" ? C.danger : tone === "warn" ? C.warn : C.ink, padding: "2px 0" }}>{children}</div>;
+  const Ok = ({ children }) => <div style={{ fontFamily: sans, fontSize: 12.5, color: C.accent }}>✓ {children}</div>;
+  const link = (c) => <button onClick={() => { onClose(); onOpenCard && onOpenCard(c.id); }} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, color: C.accentDark, textDecoration: "underline" }}>{c.name}</button>;
+  return (
+    <Modal title={`Executive report — ${fmtShort(TODAY)} ${TODAY.getFullYear()}`} onClose={onClose} width={860}>
+      <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Financial figures: <strong>{periodLabelText}</strong> (the period selected on the dashboard). Controls: last working day ({fmtShort(lastDay)}), month to date and the previous week.</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {kpis.map((k) => <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} accent={k.accent} />)}
+      </div>
+
+      <Sec title={`Hours declared on ${fmtShort(lastDay)}: ${h1(dayTotal)} of ${h1(dayExpected)} expected`}>
+        {flagged.length === 0 ? <Ok>Everyone declared a normal number of hours.</Ok> : flagged.map((r) => (
+          <Line key={r.e.id} tone={r.status === "missing" ? "bad" : "warn"}>
+            {r.status === "missing" ? "🔴" : "🟠"} {r.e.name}: {h1(r.h)} (expected {h1(r.exp)}) — {r.status === "missing" ? "no hours declared" : r.status === "under" ? "below 75% of expected" : "unusually many hours"}
+          </Line>
+        ))}
+        {dayRows.filter((r) => r.status === "leave").length > 0 && <Line>On leave: {dayRows.filter((r) => r.status === "leave").map((r) => r.e.name).join(", ")}</Line>}
+      </Sec>
+
+      <Sec title="Controls">
+        {nonChargeable.length === 0 ? <Ok>No one has more than 1 hour of non-chargeable time on {fmtShort(lastDay)}.</Ok> : nonChargeable.map((r) => (
+          <Line key={r.e.id} tone="warn">🟠 {r.e.name}: {h1(r.hours)} non-chargeable on {fmtShort(lastDay)} ({Object.entries(r.byAct).map(([a, h]) => `${ACTIVITY_LABELS[a] || a} ${h1(h)}`).join(", ")})</Line>
+        ))}
+        {unlocked.length === 0 ? <Ok>Previous week submitted/locked for everyone who logged hours.</Ok> : <Line tone="warn">🟠 Previous week ({fmtShort(weekStartPrev)}) not submitted: {unlocked.map((e) => e.name).join(", ")}</Line>}
+        {pendingLeave.length === 0 ? <Ok>No leave requests waiting.</Ok> : <Line tone="warn">🟠 {pendingLeave.length} leave request{pendingLeave.length > 1 ? "s" : ""} waiting: {pendingLeave.map((r) => nameOf(r.employeeId)).join(", ")}</Line>}
+        {overdueTasks.length === 0 ? <Ok>No overdue tasks.</Ok> : <Line tone="warn">🟠 {overdueTasks.length} overdue task{overdueTasks.length > 1 ? "s" : ""}</Line>}
+        {lossCount > 0 ? (
+          <Line tone="bad">🔴 {lossCount} client{lossCount > 1 ? "s" : ""} with negative operating profit ({fmtEur(lossTotal)}) — <button onClick={() => { onClose(); onOpenLoss(); }} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, color: C.accentDark, textDecoration: "underline" }}>see which</button></Line>
+        ) : <Ok>No client with negative operating profit in the calculation window.</Ok>}
+      </Sec>
+
+      <Sec title={`Clients — allocation ≥ 85% (${fmtMonthYear(monthStart)}, to date)`}>
+        {nearAlloc.length === 0 ? <Ok>No client near its allocation.</Ok> : nearAlloc.map((r) => <Line key={r.c.id} tone={r.hours > r.alloc ? "bad" : "warn"}>{r.hours > r.alloc ? "🔴" : "🟠"} {link(r.c)}: {h1(r.hours)} / {h1(r.alloc)} ({Math.round((r.hours / r.alloc) * 100)}%)</Line>)}
+      </Sec>
+      <Sec title="Lowest effective rate this month (fixed fee accrued ÷ hours, ≥ 5h)">
+        {lowRate.length === 0 ? <Line>Not enough hours yet.</Line> : lowRate.map((r) => <Line key={r.c.id}>{link(r.c)}: €{r.rate.toFixed(0)}/h ({h1(r.hours)})</Line>)}
+      </Sec>
+      <Sec title={`Billing — ${prevMonth}`}>
+        <Line tone={notInvoiced.length ? "warn" : undefined}>{notInvoiced.length ? "🟠" : "✓"} Not invoiced: <strong>{notInvoiced.length}</strong>{notInvoiced.length ? " — " + notInvoiced.slice(0, 8).map((c) => c.name).join(", ") + (notInvoiced.length > 8 ? "…" : "") : ""}</Line>
+        <Line tone={unpaid.length ? "warn" : undefined}>{unpaid.length ? "🟠" : "✓"} Invoiced, not collected: <strong>{unpaid.length}</strong></Line>
+      </Sec>
+      <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 14 }}>The same snapshot is emailed on schedule by the executive-report function. Rules: no hours on a working day · below 75% of expected · more than expected + 3h · more than 1h non-chargeable in a day.</div>
+    </Modal>
+  );
+}
+
+function AdminDashboard({ leaveRequests = [], lockedWeeks = [], employees, clients, entries, rentalProperties, rentalExpenses, operatingExpenses = [], tasks = [], onOpenCard, templates = [], complianceAlerts = [], onOpenCompliance, billingStatuses = [], onOpenBilling, amlRecords = [] }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "quarter" | "year"
   const [anchor, setAnchor] = useState(TODAY);
   const [lossModal, setLossModal] = useState(false);
+  const [execModal, setExecModal] = useState(false);
   const DEFAULT_DASHBOARD_CONFIG = {
     statCards: true, billingPanel: true, ddPanel: true, compliancePanel: true, onboardingPanel: true, tasksPanel: true, growthPanel: true, allocationChart: true, revenueCostChart: true,
     byClientTable: true, byEmployeeTable: true, nonChargeableTable: true, profitabilityTable: true, departmentTable: true, costCenterTable: true,
@@ -2562,13 +2661,13 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
   const lossClients = !profReliable ? [] : clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
   const lossTotal = lossClients.reduce((s, r) => s + r.operatingProfit, 0);
   useEffect(() => {
-    // Opens by itself once per browser session when the dashboard loads.
-    if (lossClients.length === 0) return;
+    // The executive report opens by itself once per browser session when the dashboard loads
+    // (it links to the loss-making clients pop-up).
     let seen = false;
-    try { seen = sessionStorage.getItem("gloria_loss_popup") === "1"; } catch { /* ignore */ }
-    if (!seen) { setLossModal(true); try { sessionStorage.setItem("gloria_loss_popup", "1"); } catch { /* ignore */ } }
+    try { seen = sessionStorage.getItem("gloria_exec_popup") === "1"; } catch { /* ignore */ }
+    if (!seen) { setExecModal(true); try { sessionStorage.setItem("gloria_exec_popup", "1"); } catch { /* ignore */ } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lossClients.length > 0]);
+  }, []);
 
   // Revenue, labor cost and profit per cost center for the period. The
   // rows add up to the same totals as the cards above; "Unallocated" only
@@ -2792,6 +2891,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
               {periodLabel(period, rangeStart, rangeEnd)}
             </div>
             <button onClick={() => shiftAnchor(1)} style={navBtnStyle}><ChevronRight size={16} /></button>
+            <Btn size="sm" onClick={() => setExecModal(true)}>Executive report</Btn>
             <Btn variant="secondary" size="sm" onClick={() => setCustomizing(true)}>Customize</Btn>
             <Btn variant="secondary" size="sm" onClick={exportReport}>Export to Excel</Btn>
           </div>
@@ -2802,6 +2902,18 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
         <div onClick={() => setLossModal(true)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 10, background: C.dangerSoft || "#fdecec", border: `1px solid ${C.danger}`, borderRadius: 8, padding: "9px 14px", marginBottom: 18, fontFamily: sans, fontSize: 13, color: C.danger, fontWeight: 600 }}>
           <AlertTriangle size={16} /> {lossClients.length} {lossClients.length === 1 ? "client has" : "clients have"} negative operating profit in this period ({fmtEur(lossTotal)}) — click to see which
         </div>
+      )}
+      {execModal && (
+        <ExecutiveReportModal onClose={() => setExecModal(false)} onOpenLoss={() => setLossModal(true)} onOpenCard={onOpenCard}
+          periodLabelText={periodLabel(period, rangeStart, rangeEnd)} employees={employees} clients={clients} entries={entries} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks}
+          lossCount={lossClients.length} lossTotal={lossTotal}
+          kpis={[
+            { label: "Revenue", value: fmtEur(totalRevenue), sub: `${totalHours.toFixed(0)}h logged`, accent: C.accent },
+            { label: "Labor cost", value: fmtEur(totalCost), sub: totalRevenue > 0 ? `${Math.round((totalCost / totalRevenue) * 100)}% of revenue` : "" },
+            { label: "Gross profit", value: fmtEur(totalProfit), sub: overallMargin != null ? `${overallMargin.toFixed(0)}% margin` : "", accent: totalProfit < 0 ? C.danger : undefined },
+            { label: "Operating profit", value: fmtEur(operatingProfit), sub: operatingMargin != null ? `${operatingMargin.toFixed(0)}% margin` : "", accent: operatingProfit < 0 ? C.danger : undefined },
+            { label: "Effective rate", value: avgEffectiveRate ? "€" + avgEffectiveRate.toFixed(0) + "/h" : "—", sub: "revenue ÷ hours" },
+          ]} />
       )}
       {lossModal && (
         <Modal title={`Clients with negative operating profit — ${periodLabel(period, rangeStart, rangeEnd)}`} onClose={() => setLossModal(false)} width={760}>
@@ -8428,7 +8540,7 @@ export default function App() {
           <TeamCalendar employees={employees} leaveRequests={leaveRequests} />
         )}
         {user.role === "admin" && view === "dashboard" && (
-          <AdminDashboard employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} operatingExpenses={operatingExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates}
+          <AdminDashboard leaveRequests={leaveRequests} lockedWeeks={lockedWeeks} employees={employees} clients={clients} entries={entries} rentalProperties={rentalProperties} rentalExpenses={rentalExpenses} operatingExpenses={operatingExpenses} tasks={tasks} onOpenCard={openClientCard} templates={templates}
             complianceAlerts={amlAlerts({ clients, amlRecords, cases: amlCases, requests: authorityRequests, amlFirm, employees })} onOpenCompliance={() => setView("compliance")}
             billingStatuses={billingStatuses} onOpenBilling={() => setView("billing")} amlRecords={amlRecords} />
         )}
