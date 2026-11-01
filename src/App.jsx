@@ -2415,14 +2415,20 @@ function computeClientProfitability({ employees, clients, entries, operatingExpe
   const clientOverhead = Object.fromEntries(billed.map((c) => [c.id, 0]));
   const overheadByCC = OVERHEAD_CCS.map((cc) => {
     const pool = ovhPool[cc], hours = ovhDriverTotal(cc);
-    billed.forEach((c) => { clientOverhead[c.id] += hours > 0 ? pool * (ovhDriver[cc][c.id] / hours) : pool / billed.length; });
+    const billedRevenue = billed.reduce((s, c) => s + c.revenue, 0);
+    // No hours in this cost center → spread by revenue (an equal split charged idle clients the same as busy ones).
+    billed.forEach((c) => { clientOverhead[c.id] += hours > 0 ? pool * (ovhDriver[cc][c.id] / hours) : (billedRevenue > 0 ? pool * (c.revenue / billedRevenue) : 0); });
     return { key: cc, label: cc === "general" ? "General (company-wide)" : costCenterLabel(cc), pool, hours, perHour: hours > 0 ? pool / hours : null };
   }).filter((r) => Math.abs(r.pool) > 0.005);
   const clientProfitRows = billed.map((c) => {
     const grossProfit = c.revenue - c.cost, overhead = clientOverhead[c.id], operatingProfitC = grossProfit - overhead;
     return { id: c.id, name: c.name, hours: c.hours, revenue: c.revenue, cost: c.cost, grossProfit, grossMargin: (grossProfit / c.revenue) * 100, overhead, operatingProfit: operatingProfitC, operatingMargin: (operatingProfitC / c.revenue) * 100 };
   }).sort((a, b) => a.operatingMargin - b.operatingMargin);
-  return { clientProfitRows, overheadByCC, rangeStart, rangeEnd, clamped };
+  const windowDays = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
+  const windowHours = rangeEntries.filter((e) => e.clientId).reduce((s, e) => s + e.hours, 0);
+  // Margins are only meaningful once the window has a reasonable amount of logged time.
+  const reliable = windowDays >= 7 && windowHours >= 10;
+  return { clientProfitRows, overheadByCC, rangeStart, rangeEnd, clamped, windowDays, windowHours, reliable };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2551,9 +2557,9 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
     unallocatedCostByDepartment[ec.department] = (unallocatedCostByDepartment[ec.department] || 0) + (ec.byCostCenter[UNALLOCATED] || 0);
   });
 
-  const { clientProfitRows, overheadByCC, rangeStart: profStart, rangeEnd: profEnd, clamped: profClamped } = computeClientProfitability({ employees, clients, entries, operatingExpenses, rentalExpenses, periodStart: rangeStart, periodEnd: rangeEnd });
+  const { clientProfitRows, overheadByCC, rangeStart: profStart, rangeEnd: profEnd, clamped: profClamped, windowDays: profDays, windowHours: profHours, reliable: profReliable } = computeClientProfitability({ employees, clients, entries, operatingExpenses, rentalExpenses, periodStart: rangeStart, periodEnd: rangeEnd });
   // Clients with negative operating profit in the selected period — shown in a pop-up.
-  const lossClients = clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
+  const lossClients = !profReliable ? [] : clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
   const lossTotal = lossClients.reduce((s, r) => s + r.operatingProfit, 0);
   useEffect(() => {
     // Opens by itself once per browser session when the dashboard loads.
@@ -3352,6 +3358,7 @@ function AdminDashboard({ employees, clients, entries, rentalProperties, rentalE
             <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 14, color: C.ink, marginBottom: 2 }}>Profitability by client — gross and operating margin</div>
             <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
               Gross margin = (revenue − labor cost of the hours on the client) ÷ revenue. Operating margin also charges each client its share of the overhead (cost of internal hours + operating expenses), allocated by cost center in proportion to the hours spent on the client — see the table below. Sorted from lowest operating margin.
+              {!profReliable && <div style={{ color: C.warn, fontWeight: 600, margin: "6px 0" }}>The calculation window is too short ({profDays} day{profDays === 1 ? "" : "s"}, {profHours.toFixed(1)}h logged on clients) for the margins to mean anything — pick a longer period or wait for more hours. The loss pop-up is switched off until then.</div>}
               {profClamped && <> <strong>Calculated for {fmtShort(profStart)} – {fmtShort(profEnd)}</strong> (from the first logged hours until today), so that revenue, salaries and hours cover the same days.</>}
             </div>
             <TableShell headers={["Client", "Hours", "Revenue", "Labor cost", "Gross profit", "Gross margin", "Overhead", "Operating profit", "Operating margin"]}>
