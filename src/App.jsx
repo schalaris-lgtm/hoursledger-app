@@ -1784,7 +1784,9 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
   const isWorkingDay = (d) => !isWeekend(d) && !weekHolidays.has(toKey(d));
   const approvedLeaveDays = days.filter((d) => isWorkingDay(d) && leaveOnDay(toKey(d))?.status === "approved").length;
   const baseWeeklyTarget = user.weeklyHours || 40;
-  const weeklyTarget = Math.max(0, Math.round(baseWeeklyTarget * (1 - approvedLeaveDays / 5) * 100) / 100);
+  // Public holidays on a weekday lower the week's target too, exactly like approved leave.
+  const holidayDays = days.filter((d) => !isWeekend(d) && weekHolidays.has(toKey(d))).length;
+  const weeklyTarget = Math.max(0, Math.round(baseWeeklyTarget * (1 - (approvedLeaveDays + holidayDays) / 5) * 100) / 100);
   const weeklyDiff = weekTotal - weeklyTarget;
   const onTargetWeek = Math.abs(weeklyDiff) < 0.01;
   const weeklyDiffLabel = onTargetWeek ? "On track" : weeklyDiff > 0 ? `+${weeklyDiff.toFixed(2)}h overtime` : `${weeklyDiff.toFixed(2)}h undertime`;
@@ -1840,7 +1842,7 @@ function EmployeeTimesheet({ user, clients, entries, refetchEntries, lockedWeeks
 
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <StatCard label="This week" value={weekTotal.toFixed(2) + "h"} accent={C.accent} />
-        <StatCard label={`vs. ${weeklyTarget}h/week target${approvedLeaveDays ? ` (${approvedLeaveDays} leave day${approvedLeaveDays > 1 ? "s" : ""})` : ""}`} value={weeklyDiffLabel} accent={weeklyDiffColor} />
+        <StatCard label={`vs. ${weeklyTarget}h/week target${approvedLeaveDays || holidayDays ? ` (${[approvedLeaveDays ? `${approvedLeaveDays} leave day${approvedLeaveDays > 1 ? "s" : ""}` : "", holidayDays ? `${holidayDays} holiday${holidayDays > 1 ? "s" : ""}` : ""].filter(Boolean).join(" + ")})` : ""}`} value={weeklyDiffLabel} accent={weeklyDiffColor} />
         <StatCard label={fmtMonthYear(weekStart)} value={monthTotal.toFixed(2) + "h"} />
         <StatCard label="Entries this week" value={weekEntries.length} />
       </div>
@@ -3522,14 +3524,14 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
   const total = rows.reduce((s, e) => s + e.hours, 0);
 
   const weekEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= weekStart && d <= weekEnd; });
-  // Approved leave on a working day (not weekend, not a public holiday) lowers that week's contracted hours.
+  // Public holidays and approved leave on a working day lower that week's contracted hours.
   const weekHolidays = holidayMapForYears([weekStart.getFullYear(), weekEnd.getFullYear()]);
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)).filter((d) => !isWeekend(d) && !weekHolidays.has(toKey(d)));
   const compliance = employees.filter((e) => employeeBilledInRange(e, weekStart, weekEnd)).map((e) => {
     const base = e.weeklyHours || 40;
     const approved = leaveRequests.filter((r) => r.employeeId === e.id && r.status === "approved");
     const leaveDays = weekDays.filter((d) => approved.some((r) => r.startDate <= toKey(d) && toKey(d) <= r.endDate)).length;
-    const target = Math.max(0, Math.round(base * (1 - leaveDays / 5) * 100) / 100);
+    const target = Math.max(0, Math.round(base * ((weekDays.length - leaveDays) / 5) * 100) / 100); // weekDays already excludes public holidays
     const logged = weekEntries.filter((t) => t.employeeId === e.id).reduce((s, t) => s + t.hours, 0);
     const diff = logged - target;
     return { ...e, base, leaveDays, target, logged, diff };
@@ -3544,7 +3546,7 @@ function AdminTimesheets({ employees, clients, entries, refetchEntries, lockedWe
           Weekly hours vs. contract
         </div>
         <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 12 }}>
-          {fmtShort(weekStart)} – {fmtShort(weekEnd)}. Contracted hours are set on the Employees page; approved leave days reduce the week's target.
+          {fmtShort(weekStart)} – {fmtShort(weekEnd)}. Contracted hours are set on the Employees page; approved leave days and public holidays reduce the week's target.
         </div>
         <TableShell headers={["Employee", "Contracted /wk", "Logged", "Difference", "Status"]}>
           {compliance.map((e) => {
