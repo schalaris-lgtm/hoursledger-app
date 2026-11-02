@@ -2445,7 +2445,7 @@ function computeClientProfitability({ employees, clients, entries, operatingExpe
 /* Executive report pop-up — snapshot of KPIs and controls (admin Dashboard) */
 /* ---------------------------------------------------------------------- */
 
-function ExecutiveReportModal({ onClose, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, operatingExpenses = [], rentalExpenses = [], onOpenCard }) {
+function ExecutiveReportModal({ initialTab = "profitability", onClose, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, operatingExpenses = [], rentalExpenses = [], onOpenCard }) {
   // Financial snapshot: own period selector (month by default), same formulas as the Dashboard.
   const [kPeriod, setKPeriod] = useState("month");
   const [kStart, kEnd] = periodRange(kPeriod, TODAY);
@@ -2513,51 +2513,161 @@ function ExecutiveReportModal({ onClose, employees, clients, entries, tasks, bil
   const Line = ({ tone, children }) => <div style={{ fontFamily: sans, fontSize: 12.5, color: tone === "bad" ? C.danger : tone === "warn" ? C.warn : C.ink, padding: "2px 0" }}>{children}</div>;
   const Ok = ({ children }) => <div style={{ fontFamily: sans, fontSize: 12.5, color: C.accent }}>✓ {children}</div>;
   const link = (c) => <button onClick={() => { onClose(); onOpenCard && onOpenCard(c.id); }} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, color: C.accentDark, textDecoration: "underline" }}>{c.name}</button>;
+  // ---- Staff & hours: per employee, last full week and month to date ----
+  const wdCount = (a, b, empId) => { let n = 0; for (let d = new Date(a); d <= b; d = addDays(d, 1)) if (isWork(d) && !onLeave(empId, toKey(d))) n++; return n; };
+  const sumHours = (empId, a, b, only) => entries.filter((x) => x.employeeId === empId && fromKey(x.date) >= a && fromKey(x.date) <= b && (!only || only(x))).reduce((s, x) => s + x.hours, 0);
+  const wkA = weekStartPrev, wkB = addDays(wkA, 6);
+  const mtdEnd = lastDay >= monthStart ? lastDay : null;
+  const staffRows = employees.filter((e) => e.active && (e.weeklyHours || 0) > 0 && employeeBilledInRange(e, monthStart < wkA ? monthStart : wkA, TODAY)).map((e) => {
+    const perDay = (e.weeklyHours || 40) / 5;
+    const wkExp = wdCount(wkA, addDays(wkA, 4), e.id) * perDay, wkDecl = sumHours(e.id, wkA, wkB), wkNc = sumHours(e.id, wkA, wkB, (x) => x.activity);
+    const mExp = mtdEnd ? wdCount(monthStart, mtdEnd, e.id) * perDay : 0, mDecl = mtdEnd ? sumHours(e.id, monthStart, mtdEnd) : 0, mNc = mtdEnd ? sumHours(e.id, monthStart, mtdEnd, (x) => x.activity) : 0;
+    let noHours = 0;
+    if (mtdEnd) for (let d = new Date(monthStart); d <= mtdEnd; d = addDays(d, 1)) if (isWork(d) && !onLeave(e.id, toKey(d)) && sumHours(e.id, d, d) === 0) noHours++;
+    return { e, wkExp, wkDecl, wkNc, mExp, mDecl, mNc, noHours };
+  });
+  const ncByAct = {}; if (mtdEnd) entries.filter((x) => x.activity && fromKey(x.date) >= monthStart && fromKey(x.date) <= mtdEnd).forEach((x) => { ncByAct[x.activity] = (ncByAct[x.activity] || 0) + x.hours; });
+  const ncTotal = Object.values(ncByAct).reduce((s, v) => s + v, 0), declTotalM = staffRows.reduce((s, r) => s + r.mDecl, 0);
+  const dColor = (diff) => (Math.abs(diff) < 0.01 ? C.accent : diff > 0 ? C.warn : C.danger);
+  const signed = (n) => (n >= 0 ? "+" : "") + n.toFixed(1) + "h";
+
+  // ---- Profitability: 6-month trend, best / worst clients, overhead ----
+  const trend = Array.from({ length: 6 }, (_, i) => {
+    const ms = new Date(TODAY.getFullYear(), TODAY.getMonth() - (5 - i), 1), me = endOfMonth(ms);
+    const t = computePeriodTotals(clients, employees, entries, rentalExpenses, ms, me);
+    const ox = opexForRange(operatingExpenses, ms, me, rentalExpenses).total;
+    return { label: ms.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }), ...t, opex: ox, op: t.profit - ox };
+  });
+  const worst = prof.reliable ? prof.clientProfitRows.slice(0, 8) : [];
+  const best = prof.reliable ? [...prof.clientProfitRows].sort((a, b) => b.operatingProfit - a.operatingProfit).slice(0, 8) : [];
+  const [tab, setTab] = useState(initialTab);
+  const tabBtn = (k, label) => <button key={k} onClick={() => setTab(k)} style={{ background: "none", border: "none", cursor: "pointer", padding: "8px 14px", fontFamily: sans, fontSize: 13, fontWeight: tab === k ? 700 : 500, color: tab === k ? C.accentDark : C.inkMuted, borderBottom: tab === k ? `2px solid ${C.accent}` : "2px solid transparent", marginBottom: -1 }}>{label}</button>;
+  const clientTable = (rows) => (
+    <TableShell headers={["Client", "Hours", "Revenue", "Gross margin", "Operating profit", "Operating margin"]}>
+      {rows.map((r) => (
+        <tr key={r.id}><Td>{link({ id: r.id, name: r.name })}</Td><Td mono>{r.hours.toFixed(1)}</Td><Td mono>{fmtEur(r.revenue)}</Td>
+          <Td mono style={{ color: r.grossMargin < 0 ? C.danger : undefined }}>{r.grossMargin.toFixed(0)}%</Td>
+          <Td mono style={{ color: r.operatingProfit < 0 ? C.danger : undefined }}>{fmtEur(r.operatingProfit)}</Td>
+          <Td mono style={{ fontWeight: 700, color: r.operatingMargin < 0 ? C.danger : undefined }}>{r.operatingMargin.toFixed(0)}%</Td></tr>
+      ))}
+    </TableShell>
+  );
   return (
-    <Modal title={`Executive report — ${fmtShort(TODAY)} ${TODAY.getFullYear()}`} onClose={onClose} width={860}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        {PERIOD_OPTIONS.map((o) => <Btn key={o.key} size="sm" variant={kPeriod === o.key ? "primary" : "secondary"} onClick={() => setKPeriod(o.key)}>{o.label}</Btn>)}
-        <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Financial figures: <strong>{periodLabelText}</strong>. Controls: last working day ({fmtShort(lastDay)}), month to date and the previous week.</span>
-      </div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {kpis.map((k) => <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} accent={k.accent} />)}
+    <Modal title={`Executive report — ${fmtShort(TODAY)} ${TODAY.getFullYear()}`} onClose={onClose} width={900}>
+      <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${C.border}`, marginBottom: 12 }}>
+        {tabBtn("profitability", "Profitability")}
+        {tabBtn("staff", "Staff & hours")}
       </div>
 
-      <Sec title={`Hours declared on ${fmtShort(lastDay)}: ${h1(dayTotal)} of ${h1(dayExpected)} expected`}>
-        {flagged.length === 0 ? <Ok>Everyone declared a normal number of hours.</Ok> : flagged.map((r) => (
-          <Line key={r.e.id} tone={r.status === "missing" ? "bad" : "warn"}>
-            {r.status === "missing" ? "🔴" : "🟠"} {r.e.name}: {h1(r.h)} (expected {h1(r.exp)}) — {r.status === "missing" ? "no hours declared" : r.status === "under" ? "below 75% of expected" : "unusually many hours"}
-          </Line>
-        ))}
-        {dayRows.filter((r) => r.status === "leave").length > 0 && <Line>On leave: {dayRows.filter((r) => r.status === "leave").map((r) => r.e.name).join(", ")}</Line>}
-      </Sec>
+      {tab === "profitability" && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            {PERIOD_OPTIONS.map((o) => <Btn key={o.key} size="sm" variant={kPeriod === o.key ? "primary" : "secondary"} onClick={() => setKPeriod(o.key)}>{o.label}</Btn>)}
+            <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Period: <strong>{periodLabelText}</strong></span>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {kpis.map((k) => <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} accent={k.accent} />)}
+          </div>
 
-      <Sec title="Controls">
-        {nonChargeable.length === 0 ? <Ok>No one has more than 1 hour of non-chargeable time on {fmtShort(lastDay)}.</Ok> : nonChargeable.map((r) => (
-          <Line key={r.e.id} tone="warn">🟠 {r.e.name}: {h1(r.hours)} non-chargeable on {fmtShort(lastDay)} ({Object.entries(r.byAct).map(([a, h]) => `${ACTIVITY_LABELS[a] || a} ${h1(h)}`).join(", ")})</Line>
-        ))}
-        {unlocked.length === 0 ? <Ok>Previous week submitted/locked for everyone who logged hours.</Ok> : <Line tone="warn">🟠 Previous week ({fmtShort(weekStartPrev)}) not submitted: {unlocked.map((e) => e.name).join(", ")}</Line>}
-        {pendingLeave.length === 0 ? <Ok>No leave requests waiting.</Ok> : <Line tone="warn">🟠 {pendingLeave.length} leave request{pendingLeave.length > 1 ? "s" : ""} waiting: {pendingLeave.map((r) => nameOf(r.employeeId)).join(", ")}</Line>}
-        {overdueTasks.length === 0 ? <Ok>No overdue tasks.</Ok> : <Line tone="warn">🟠 {overdueTasks.length} overdue task{overdueTasks.length > 1 ? "s" : ""}</Line>}
-        {lossCount > 0 ? (
-          <>
-            <Line tone="bad">🔴 {lossCount} client{lossCount > 1 ? "s" : ""} with negative operating profit ({fmtEur(lossTotal)}) in {periodLabelText}:</Line>
-            {lossRows.slice(0, 10).map((r) => <Line key={r.id} tone="bad">&nbsp;&nbsp;&nbsp;{link({ id: r.id, name: r.name })}: {fmtEur(r.operatingProfit)} ({r.operatingMargin.toFixed(0)}%) · {r.hours.toFixed(1)}h</Line>)}
-            {lossCount > 10 && <Line>&nbsp;&nbsp;&nbsp;… and {lossCount - 10} more (Dashboard → Profitability by client)</Line>}
-          </>
-        ) : prof.reliable ? <Ok>No client with negative operating profit in {periodLabelText}.</Ok> : <Line>Operating profit by client: window too short to be meaningful yet.</Line>}
-      </Sec>
+          <Sec title="Last 6 months — company result">
+            <TableShell headers={["Month", "Revenue", "Labor cost", "Gross profit", "Gross margin", "Operating expenses", "Operating profit"]}>
+              {trend.map((r) => (
+                <tr key={r.label}><Td>{r.label}</Td><Td mono>{fmtEur(r.revenue)}</Td><Td mono>{fmtEur(r.cost)}</Td>
+                  <Td mono style={{ color: r.profit < 0 ? C.danger : undefined }}>{fmtEur(r.profit)}</Td><Td mono>{r.margin != null ? r.margin.toFixed(0) + "%" : "—"}</Td>
+                  <Td mono>{fmtEur(r.opex)}</Td><Td mono style={{ fontWeight: 700, color: r.op < 0 ? C.danger : undefined }}>{fmtEur(r.op)}</Td></tr>
+              ))}
+            </TableShell>
+          </Sec>
 
-      <Sec title={`Clients — allocation ≥ 85% (${fmtMonthYear(monthStart)}, to date)`}>
-        {nearAlloc.length === 0 ? <Ok>No client near its allocation.</Ok> : nearAlloc.map((r) => <Line key={r.c.id} tone={r.hours > r.alloc ? "bad" : "warn"}>{r.hours > r.alloc ? "🔴" : "🟠"} {link(r.c)}: {h1(r.hours)} / {h1(r.alloc)} ({Math.round((r.hours / r.alloc) * 100)}%)</Line>)}
-      </Sec>
-      <Sec title="Lowest effective rate this month (fixed fee accrued ÷ hours, ≥ 5h)">
-        {lowRate.length === 0 ? <Line>Not enough hours yet.</Line> : lowRate.map((r) => <Line key={r.c.id}>{link(r.c)}: €{r.rate.toFixed(0)}/h ({h1(r.hours)})</Line>)}
-      </Sec>
-      <Sec title={`Billing — ${prevMonth}`}>
-        <Line tone={notInvoiced.length ? "warn" : undefined}>{notInvoiced.length ? "🟠" : "✓"} Not invoiced: <strong>{notInvoiced.length}</strong>{notInvoiced.length ? " — " + notInvoiced.slice(0, 8).map((c) => c.name).join(", ") + (notInvoiced.length > 8 ? "…" : "") : ""}</Line>
-        <Line tone={unpaid.length ? "warn" : undefined}>{unpaid.length ? "🟠" : "✓"} Invoiced, not collected: <strong>{unpaid.length}</strong></Line>
-      </Sec>
+          <Sec title={`Clients with negative operating profit — ${periodLabelText}`}>
+            {!prof.reliable ? <Line>Window too short to be meaningful yet ({prof.windowDays} day{prof.windowDays === 1 ? "" : "s"}, {prof.windowHours.toFixed(1)}h on clients). Pick a longer period.</Line>
+              : lossCount === 0 ? <Ok>No client with negative operating profit.</Ok> : (
+                <>
+                  <Line tone="bad">🔴 {lossCount} client{lossCount > 1 ? "s" : ""}, total {fmtEur(lossTotal)}</Line>
+                  {clientTable(lossRows.slice(0, 12))}
+                  {lossCount > 12 && <Line>… and {lossCount - 12} more (Dashboard → Profitability by client)</Line>}
+                </>
+              )}
+            {prof.reliable && prof.clamped && <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>Calculated for {fmtShort(prof.rangeStart)} – {fmtShort(prof.rangeEnd)} (from the first logged hours until today).</div>}
+          </Sec>
+
+          {prof.reliable && <Sec title="Most profitable clients (operating profit)">{clientTable(best)}</Sec>}
+          {prof.reliable && worst.length > 0 && <Sec title="Lowest operating margin">{clientTable(worst)}</Sec>}
+
+          {prof.reliable && prof.overheadByCC.length > 0 && (
+            <Sec title="Overhead by cost center (allocated by client hours)">
+              <TableShell headers={["Cost center", "Overhead pool", "Driver hours", "Per hour"]}>
+                {prof.overheadByCC.map((r) => <tr key={r.key}><Td>{r.label}</Td><Td mono>{fmtEur(r.pool)}</Td><Td mono>{r.hours.toFixed(1)}</Td><Td mono>{r.perHour != null ? "€" + r.perHour.toFixed(1) : "—"}</Td></tr>)}
+              </TableShell>
+            </Sec>
+          )}
+
+          <Sec title={`Clients — allocation ≥ 85% (${fmtMonthYear(monthStart)}, to date)`}>
+            {nearAlloc.length === 0 ? <Ok>No client near its allocation.</Ok> : nearAlloc.map((r) => <Line key={r.c.id} tone={r.hours > r.alloc ? "bad" : "warn"}>{r.hours > r.alloc ? "🔴" : "🟠"} {link(r.c)}: {h1(r.hours)} / {h1(r.alloc)} ({Math.round((r.hours / r.alloc) * 100)}%)</Line>)}
+          </Sec>
+          <Sec title="Lowest effective rate this month (fixed fee accrued ÷ hours, ≥ 5h)">
+            {lowRate.length === 0 ? <Line>Not enough hours yet.</Line> : lowRate.map((r) => <Line key={r.c.id}>{link(r.c)}: €{r.rate.toFixed(0)}/h ({h1(r.hours)})</Line>)}
+          </Sec>
+          <Sec title={`Billing — ${prevMonth}`}>
+            <Line tone={notInvoiced.length ? "warn" : undefined}>{notInvoiced.length ? "🟠" : "✓"} Not invoiced: <strong>{notInvoiced.length}</strong>{notInvoiced.length ? " — " + notInvoiced.slice(0, 8).map((c) => c.name).join(", ") + (notInvoiced.length > 8 ? "…" : "") : ""}</Line>
+            <Line tone={unpaid.length ? "warn" : undefined}>{unpaid.length ? "🟠" : "✓"} Invoiced, not collected: <strong>{unpaid.length}</strong></Line>
+          </Sec>
+        </>
+      )}
+
+      {tab === "staff" && (
+        <>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 6 }}>Hours and staff controls: last working day ({fmtShort(lastDay)}), the previous week ({fmtShort(wkA)} – {fmtShort(wkB)}) and {fmtMonthYear(monthStart)} to date. Expected hours = contract hours minus public holidays and approved leave.</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <StatCard label={`Declared ${fmtShort(lastDay)}`} value={h1(dayTotal)} sub={`of ${h1(dayExpected)} expected`} accent={Math.abs(dayTotal - dayExpected) < 0.01 ? C.accent : undefined} />
+            <StatCard label="Declared this month" value={h1(declTotalM)} sub={`of ${h1(staffRows.reduce((s, r) => s + r.mExp, 0))} expected`} />
+            <StatCard label="Non-chargeable this month" value={h1(ncTotal)} sub={declTotalM > 0 ? `${Math.round((ncTotal / declTotalM) * 100)}% of declared hours` : ""} />
+            <StatCard label="Overdue tasks" value={String(overdueTasks.length)} accent={overdueTasks.length ? C.danger : undefined} sub={pendingLeave.length ? `${pendingLeave.length} leave request(s) waiting` : "No leave waiting"} />
+          </div>
+
+          <Sec title={`Hours declared on ${fmtShort(lastDay)}`}>
+            {flagged.length === 0 ? <Ok>Everyone declared a normal number of hours.</Ok> : flagged.map((r) => (
+              <Line key={r.e.id} tone={r.status === "missing" ? "bad" : "warn"}>
+                {r.status === "missing" ? "🔴" : "🟠"} {r.e.name}: {h1(r.h)} (expected {h1(r.exp)}) — {r.status === "missing" ? "no hours declared" : r.status === "under" ? "below 75% of expected" : "unusually many hours"}
+              </Line>
+            ))}
+            {dayRows.filter((r) => r.status === "leave").length > 0 && <Line>On leave: {dayRows.filter((r) => r.status === "leave").map((r) => r.e.name).join(", ")}</Line>}
+          </Sec>
+
+          <Sec title="Per employee — previous week and month to date">
+            <TableShell headers={["Employee", "Week declared", "Week expected", "Week diff", "Month declared", "Month expected", "Utilization", "Non-chargeable", "Days without hours"]}>
+              {staffRows.map((r) => {
+                const wd = r.wkDecl - r.wkExp, util = r.mExp > 0 ? r.mDecl / r.mExp : null;
+                return (
+                  <tr key={r.e.id}>
+                    <Td>{r.e.name}</Td><Td mono>{h1(r.wkDecl)}</Td><Td mono>{h1(r.wkExp)}</Td>
+                    <Td mono style={{ color: dColor(wd) }}>{signed(wd)}</Td>
+                    <Td mono>{h1(r.mDecl)}</Td><Td mono>{h1(r.mExp)}</Td>
+                    <Td mono style={{ fontWeight: 700, color: util != null && util < 0.75 ? C.danger : undefined }}>{util != null ? Math.round(util * 100) + "%" : "—"}</Td>
+                    <Td mono>{h1(r.mNc)}{r.mDecl > 0 ? ` (${Math.round((r.mNc / r.mDecl) * 100)}%)` : ""}</Td>
+                    <Td mono style={{ color: r.noHours ? C.warn : C.inkMuted }}>{r.noHours}</Td>
+                  </tr>
+                );
+              })}
+            </TableShell>
+          </Sec>
+
+          {ncTotal > 0 && (
+            <Sec title="Non-chargeable time by activity (month to date)">
+              {Object.entries(ncByAct).sort((a, b) => b[1] - a[1]).map(([k, h]) => <Line key={k}>{ACTIVITY_LABELS[k] || k}: <strong>{h1(h)}</strong> ({Math.round((h / ncTotal) * 100)}%)</Line>)}
+            </Sec>
+          )}
+
+          <Sec title="Controls">
+            {nonChargeable.length === 0 ? <Ok>No one has more than 1 hour of non-chargeable time on {fmtShort(lastDay)}.</Ok> : nonChargeable.map((r) => (
+              <Line key={r.e.id} tone="warn">🟠 {r.e.name}: {h1(r.hours)} non-chargeable on {fmtShort(lastDay)} ({Object.entries(r.byAct).map(([a, h]) => `${ACTIVITY_LABELS[a] || a} ${h1(h)}`).join(", ")})</Line>
+            ))}
+            {unlocked.length === 0 ? <Ok>Previous week submitted/locked for everyone who logged hours.</Ok> : <Line tone="warn">🟠 Previous week ({fmtShort(weekStartPrev)}) not submitted: {unlocked.map((e) => e.name).join(", ")}</Line>}
+            {pendingLeave.length === 0 ? <Ok>No leave requests waiting.</Ok> : <Line tone="warn">🟠 {pendingLeave.length} leave request{pendingLeave.length > 1 ? "s" : ""} waiting: {pendingLeave.map((r) => nameOf(r.employeeId)).join(", ")}</Line>}
+            {overdueTasks.length === 0 ? <Ok>No overdue tasks.</Ok> : <Line tone="warn">🟠 {overdueTasks.length} overdue task{overdueTasks.length > 1 ? "s" : ""}</Line>}
+          </Sec>
+        </>
+      )}
       <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 14 }}>The same snapshot is emailed on schedule by the executive-report function. Rules: no hours on a working day · below 75% of expected · more than expected + 3h · more than 1h non-chargeable in a day.</div>
     </Modal>
   );
