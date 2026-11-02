@@ -78,6 +78,12 @@ const isActivityValue = (v) => typeof v === "string" && v.startsWith(ACTIVITY_PR
 // (fixed fees split per client, extra fees tagged one by one) and of labor
 // cost (per employee: a fixed cost center, or spread by their logged hours).
 const COST_CENTERS = ["accounting", "tax", "payroll", "other", "director", "finance", "rental"];
+// Our own bank accounts — each client is told which one to pay our fee into (client card → Fees & hours).
+const FIRM_BANK_ACCOUNTS = {
+  piraeus: { label: "Πειραιώς", bank: "Τράπεζα Πειραιώς", holder: "ACCOUNTING ACCO Ε.Ε.", iban: "GR22 0172 0230 0050 2311 5216 005", bic: "PIRBGRAA" },
+  revolut: { label: "Revolut", bank: "Revolut Bank UAB", holder: "ACCOUNTING ACCO L.P.", iban: "LT49 3250 0257 1917 0014", bic: "REVOLT21" },
+};
+const bankLine = (key) => { const b = FIRM_BANK_ACCOUNTS[key]; return b ? `${b.bank} — IBAN ${b.iban} (BIC ${b.bic}) — Δικαιούχος: ${b.holder}` : ""; };
 const COST_CENTER_LABELS = { accounting: "Accounting", tax: "Tax", payroll: "Payroll", other: "Other", director: "Director", finance: "Finance", rental: "Rental" };
 
 // ---- myDATA codification (ΑΑΔΕ) used by the invoicing export for Hyper ----
@@ -1224,7 +1230,7 @@ const mapClientRow = (r) => ({
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
   contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null, contractOtherFeesText: r.contract_other_fees_text || "",
   vatRate: r.vat_rate === null || r.vat_rate === undefined ? 24 : Number(r.vat_rate),
-  invoiceType: r.invoice_type && MYDATA_INVOICE_TYPES[r.invoice_type] ? r.invoice_type : "2.1", vatExemptionCategory: r.vat_exemption_category === null || r.vat_exemption_category === undefined ? null : Number(r.vat_exemption_category), fixedService: r.fixed_service && INVOICE_SERVICES[r.fixed_service] ? r.fixed_service : "accounting",
+  invoiceType: r.invoice_type && MYDATA_INVOICE_TYPES[r.invoice_type] ? r.invoice_type : "2.1", vatExemptionCategory: r.vat_exemption_category === null || r.vat_exemption_category === undefined ? null : Number(r.vat_exemption_category), fixedService: r.fixed_service && INVOICE_SERVICES[r.fixed_service] ? r.fixed_service : "accounting", paymentBank: r.payment_bank && FIRM_BANK_ACCOUNTS[r.payment_bank] ? r.payment_bank : "",
   annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
   formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
 });
@@ -4022,7 +4028,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
               name: "Clients",
               rows: clients.map((c) => ({
                 Name: c.name, Stage: LIFECYCLE_LABELS[c.lifecycle], "Go-live date": c.goLiveDate || "", Status: c.active ? "Active" : "Inactive",
-                "Fixed fee (€/mo)": c.fixedFee ?? "", "Accounting alloc. (h)": c.allocation?.accounting || 0,
+                "Fixed fee (€/mo)": c.fixedFee ?? "", "Bank for our fee": c.paymentBank ? FIRM_BANK_ACCOUNTS[c.paymentBank].label : "", "Accounting alloc. (h)": c.allocation?.accounting || 0,
                 "Tax alloc. (h)": c.allocation?.tax || 0, "Payroll alloc. (h)": c.allocation?.payroll || 0,
                 "Other alloc. (h)": c.allocation?.other || 0,
                 ...Object.fromEntries(COST_CENTERS.map((cc) => [`Fee → ${COST_CENTER_LABELS[cc]} (€)`, c.feeSplit?.[cc] || 0])),
@@ -4097,7 +4103,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
             <input type="checkbox" checked={hideInactive} onChange={(e) => toggleHideInactive(e.target.checked)} /> Hide deactivated ({inactiveCount})
           </label>
         </div>
-        <TableShell headers={["Client", "Stage", "Hours", "Revenue", "Allocation", "Fixed fee", "Extra fees (period)", "Status", ""]}>
+        <TableShell headers={["Client", "Stage", "Hours", "Revenue", "Allocation", "Fixed fee", "Bank", "Extra fees (period)", "Status", ""]}>
           {filtered.map((c) => {
             const clientPeriodEntries = periodEntries.filter((e) => e.clientId === c.id);
             const hrs = clientPeriodEntries.reduce((s, e) => s + e.hours, 0);
@@ -4121,6 +4127,7 @@ function AdminClients({ user, clients, refetchClients, entries, onOpenCard, task
                   {feeThen.fixedFee ? fmtEur(feeThen.fixedFee) + "/mo" : "—"}
                   {feeThen.fixedFee && feeSplitTotal(feeThen.feeSplit) <= 0 ? <span title="Fixed fee has no cost-center split yet" style={{ marginLeft: 6, color: C.warn }}>●</span> : null}
                 </Td>
+                <Td title={c.paymentBank ? bankLine(c.paymentBank) : "No bank chosen yet"} style={{ fontSize: 12, color: c.paymentBank ? C.ink : C.inkFaint }}>{c.paymentBank ? FIRM_BANK_ACCOUNTS[c.paymentBank].label : "—"}</Td>
                 <Td mono>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span>{extraThisPeriod > 0 ? fmtEur(extraThisPeriod) : "—"}</span>
@@ -5920,7 +5927,7 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
       const svc = INVOICE_SERVICES[svcKey] || INVOICE_SERVICES.other;
       const noVat = Number(l.vatRate) === 0;
       const ex = noVat ? MYDATA_VAT_EXEMPTIONS.find(([k]) => k === c.vatExemptionCategory) : null;
-      const issues = [!c.afm && "Λείπει ΑΦΜ", noVat && !ex && "Λείπει αιτία εξαίρεσης ΦΠΑ"].filter(Boolean).join("; ");
+      const issues = [!c.afm && "Λείπει ΑΦΜ", noVat && !ex && "Λείπει αιτία εξαίρεσης ΦΠΑ", !c.paymentBank && "Λείπει τράπεζα είσπραξης"].filter(Boolean).join("; ");
       return {
         "Πελάτης": c.name || "", "ΑΦΜ": c.afm || "", "Email": c.email || "",
         "Τύπος παραστατικού (κωδ.)": type, "Τύπος παραστατικού": t.label,
@@ -5929,6 +5936,7 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
         "Κατηγορία ΦΠΑ (κωδ.)": MYDATA_VAT_CATEGORY[noVat ? 0 : 24] ?? "", "ΦΠΑ %": l.vatRate, "ΦΠΑ (€)": Number(l.vat.toFixed(2)), "Σύνολο (€)": Number(l.amount.toFixed(2)),
         "Αιτία εξαίρεσης ΦΠΑ (κωδ.)": ex ? ex[0] : "", "Αιτία εξαίρεσης ΦΠΑ": ex ? ex[1] : "",
         "Χαρακτηρισμός εσόδων — κατηγορία": MYDATA_INCOME_CATEGORY.code, "Χαρακτηρισμός εσόδων — τύπος": t.incomeType, "Περιγραφή τύπου": t.incomeTypeLabel,
+        "Τράπεζα είσπραξης": c.paymentBank ? FIRM_BANK_ACCOUNTS[c.paymentBank].label : "", "IBAN": c.paymentBank ? FIRM_BANK_ACCOUNTS[c.paymentBank].iban : "",
         "Έλεγχος": issues,
       };
     });
@@ -5973,10 +5981,11 @@ function AdminBilling({ clients, billingStatuses, refetchBilling }) {
         {byClient.length === 0 ? (
           <EmptyState icon={Wallet} title="Nothing open" sub="Every fee to date is invoiced and paid." />
         ) : (
-          <TableShell headers={["Client", "Not invoiced", "Invoiced, unpaid", "Open lines", "Oldest open month", "Longest wait", ""]}>
+          <TableShell headers={["Client", "Bank", "Not invoiced", "Invoiced, unpaid", "Open lines", "Oldest open month", "Longest wait", ""]}>
             {byClient.map((c) => (
               <tr key={c.id}>
                 <Td>{c.name}</Td>
+                <Td style={{ fontSize: 12, color: C.inkMuted }}>{FIRM_BANK_ACCOUNTS[clients.find((x) => x.id === c.id)?.paymentBank]?.label || "—"}</Td>
                 <Td mono style={{ color: c.toInvoice > 0 ? C.warn : C.inkMuted }}>{c.toInvoice > 0 ? fmtEur(c.toInvoice) : "—"}</Td>
                 <Td mono style={{ fontWeight: 700, color: c.maxDays > BILLING_OVERDUE_DAYS ? C.danger : c.outstanding > 0 ? C.warn : C.inkMuted }}>{c.outstanding > 0 ? fmtEur(c.outstanding) : "—"}</Td>
                 <Td mono>{c.openCount}</Td>
@@ -6752,6 +6761,13 @@ function ClientFeesTab({ client, entries, employees, refetchClients, isAdmin = t
                 </select>
               </Field>
             ))}
+            <Field label="Bank for our fee (client pays into)">
+              <select style={{ ...inputStyle, width: 220 }} value={client.paymentBank || ""}
+                onChange={async (e) => { const { error } = await supabase.from("clients").update({ payment_bank: e.target.value || null }).eq("id", client.id); if (error) { window.alert(`Couldn't save: ${error.message}`); return; } refetchClients(); }}>
+                <option value="">— not set —</option>
+                {Object.entries(FIRM_BANK_ACCOUNTS).map(([k, b]) => <option key={k} value={k}>{b.label}</option>)}
+              </select>
+            </Field>
             {Number(client.vatRate ?? 24) === 0 && (
               <Field label="VAT exemption reason (0% VAT)">
                 <select style={{ ...inputStyle, width: 300 }} value={client.vatExemptionCategory ?? ""}
@@ -6762,6 +6778,12 @@ function ClientFeesTab({ client, entries, employees, refetchClients, isAdmin = t
               </Field>
             )}
           </div>
+          {client.paymentBank && FIRM_BANK_ACCOUNTS[client.paymentBank] && (() => { const b = FIRM_BANK_ACCOUNTS[client.paymentBank]; return (
+            <div style={{ marginTop: 8, fontFamily: sans, fontSize: 12.5, color: C.inkMuted, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span>{b.bank} · {b.holder} · IBAN <strong style={{ fontFamily: mono, color: C.ink }}>{b.iban}</strong> · BIC {b.bic}</span>
+              <Btn size="sm" variant="ghost" onClick={() => { try { navigator.clipboard.writeText(b.iban.replace(/\s/g, "")); } catch { /* ignore */ } }}>Copy IBAN</Btn>
+            </div>
+          ); })()}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "12px 0 6px" }}>
             <div style={{ fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink }}>Split of the fee by cost center (€/month)</div>
             <div style={{ fontFamily: mono, fontSize: 11.5, color: splitTotal === 0 ? C.inkFaint : Math.abs(remaining) <= 0.01 ? C.accent : C.danger }}>
@@ -7049,6 +7071,7 @@ function buildAgreementHtml({ client, aml, firm, employees, contacts }) {
   <p>Σε περίπτωση μεταβολής των παρεχόμενων υπηρεσιών η σύμβαση θα τροποποιηθεί αναλόγως.</p>
   ${art("Οικονομικοί Όροι")}
   <p>${e(client.contractPaymentTerms || CONTRACT_DEFAULT_PAYMENT)}</p>
+  ${client.paymentBank && FIRM_BANK_ACCOUNTS[client.paymentBank] ? `<p>Η πληρωμή της αμοιβής θα γίνεται με κατάθεση στον τραπεζικό λογαριασμό της Εταιρείας: ${e(bankLine(client.paymentBank))}.</p>` : ""}
   ${art("Υποχρεώσεις Εντολέα")}
   <p>Ο Εντολέας υποχρεούται:</p>
   <ul><li>Να παρέχει έγκαιρα και με ακρίβεια όλα τα απαραίτητα στοιχεία και παραστατικά.</li><li>Να ενημερώνει τον Ανάδοχο για οποιαδήποτε μεταβολή αφορά τη δραστηριότητά του.</li><li>Να καταβάλλει εμπρόθεσμα τις συμφωνημένες αμοιβές.</li></ul>
