@@ -2445,7 +2445,24 @@ function computeClientProfitability({ employees, clients, entries, operatingExpe
 /* Executive report pop-up — snapshot of KPIs and controls (admin Dashboard) */
 /* ---------------------------------------------------------------------- */
 
-function ExecutiveReportModal({ onClose, onOpenLoss, kpis, periodLabelText, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, lossCount, lossTotal, onOpenCard }) {
+function ExecutiveReportModal({ onClose, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, operatingExpenses = [], rentalExpenses = [], onOpenCard }) {
+  // Financial snapshot: own period selector (month by default), same formulas as the Dashboard.
+  const [kPeriod, setKPeriod] = useState("month");
+  const [kStart, kEnd] = periodRange(kPeriod, TODAY);
+  const periodLabelText = periodLabel(kPeriod, kStart, kEnd);
+  const tot = computePeriodTotals(clients, employees, entries, rentalExpenses, kStart, kEnd);
+  const opexTot = opexForRange(operatingExpenses, kStart, kEnd, rentalExpenses).total;
+  const opProfit = tot.profit - opexTot, opMargin = tot.revenue > 0 ? (opProfit / tot.revenue) * 100 : null;
+  const kpis = [
+    { label: "Revenue", value: fmtEur(tot.revenue), sub: `${tot.hours.toFixed(0)}h logged`, accent: C.accent },
+    { label: "Labor cost", value: fmtEur(tot.cost), sub: tot.revenue > 0 ? `${Math.round((tot.cost / tot.revenue) * 100)}% of revenue` : "" },
+    { label: "Gross profit", value: fmtEur(tot.profit), sub: tot.margin != null ? `${tot.margin.toFixed(0)}% margin` : "", accent: tot.profit < 0 ? C.danger : undefined },
+    { label: "Operating profit", value: fmtEur(opProfit), sub: opMargin != null ? `${opMargin.toFixed(0)}% margin` : "", accent: opProfit < 0 ? C.danger : undefined },
+    { label: "Effective rate", value: tot.hours > 0 ? "€" + (tot.revenue / tot.hours).toFixed(0) + "/h" : "—", sub: "revenue ÷ hours" },
+  ];
+  const prof = computeClientProfitability({ employees, clients, entries, operatingExpenses, rentalExpenses, periodStart: kStart, periodEnd: kEnd });
+  const lossRows = !prof.reliable ? [] : prof.clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
+  const lossCount = lossRows.length, lossTotal = lossRows.reduce((s, r) => s + r.operatingProfit, 0);
   const hol = holidayMapForYears([TODAY.getFullYear() - 1, TODAY.getFullYear()]);
   const isWork = (d) => !isWeekend(d) && !hol.has(toKey(d));
   let lastDay = addDays(TODAY, -1); while (!isWork(lastDay)) lastDay = addDays(lastDay, -1);
@@ -2498,7 +2515,10 @@ function ExecutiveReportModal({ onClose, onOpenLoss, kpis, periodLabelText, empl
   const link = (c) => <button onClick={() => { onClose(); onOpenCard && onOpenCard(c.id); }} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, color: C.accentDark, textDecoration: "underline" }}>{c.name}</button>;
   return (
     <Modal title={`Executive report — ${fmtShort(TODAY)} ${TODAY.getFullYear()}`} onClose={onClose} width={860}>
-      <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 10 }}>Financial figures: <strong>{periodLabelText}</strong> (the period selected on the dashboard). Controls: last working day ({fmtShort(lastDay)}), month to date and the previous week.</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        {PERIOD_OPTIONS.map((o) => <Btn key={o.key} size="sm" variant={kPeriod === o.key ? "primary" : "secondary"} onClick={() => setKPeriod(o.key)}>{o.label}</Btn>)}
+        <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Financial figures: <strong>{periodLabelText}</strong>. Controls: last working day ({fmtShort(lastDay)}), month to date and the previous week.</span>
+      </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         {kpis.map((k) => <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} accent={k.accent} />)}
       </div>
@@ -2520,8 +2540,12 @@ function ExecutiveReportModal({ onClose, onOpenLoss, kpis, periodLabelText, empl
         {pendingLeave.length === 0 ? <Ok>No leave requests waiting.</Ok> : <Line tone="warn">🟠 {pendingLeave.length} leave request{pendingLeave.length > 1 ? "s" : ""} waiting: {pendingLeave.map((r) => nameOf(r.employeeId)).join(", ")}</Line>}
         {overdueTasks.length === 0 ? <Ok>No overdue tasks.</Ok> : <Line tone="warn">🟠 {overdueTasks.length} overdue task{overdueTasks.length > 1 ? "s" : ""}</Line>}
         {lossCount > 0 ? (
-          <Line tone="bad">🔴 {lossCount} client{lossCount > 1 ? "s" : ""} with negative operating profit ({fmtEur(lossTotal)}) — <button onClick={() => { onClose(); onOpenLoss(); }} style={{ ...iconBtnStyle, padding: 0, fontFamily: sans, fontSize: 12.5, color: C.accentDark, textDecoration: "underline" }}>see which</button></Line>
-        ) : <Ok>No client with negative operating profit in the calculation window.</Ok>}
+          <>
+            <Line tone="bad">🔴 {lossCount} client{lossCount > 1 ? "s" : ""} with negative operating profit ({fmtEur(lossTotal)}) in {periodLabelText}:</Line>
+            {lossRows.slice(0, 10).map((r) => <Line key={r.id} tone="bad">&nbsp;&nbsp;&nbsp;{link({ id: r.id, name: r.name })}: {fmtEur(r.operatingProfit)} ({r.operatingMargin.toFixed(0)}%) · {r.hours.toFixed(1)}h</Line>)}
+            {lossCount > 10 && <Line>&nbsp;&nbsp;&nbsp;… and {lossCount - 10} more (Dashboard → Profitability by client)</Line>}
+          </>
+        ) : prof.reliable ? <Ok>No client with negative operating profit in {periodLabelText}.</Ok> : <Line>Operating profit by client: window too short to be meaningful yet.</Line>}
       </Sec>
 
       <Sec title={`Clients — allocation ≥ 85% (${fmtMonthYear(monthStart)}, to date)`}>
@@ -2667,11 +2691,13 @@ function AdminDashboard({ leaveRequests = [], lockedWeeks = [], employees, clien
   const lossClients = !profReliable ? [] : clientProfitRows.filter((r) => r.operatingProfit < -0.005).sort((a, b) => a.operatingProfit - b.operatingProfit);
   const lossTotal = lossClients.reduce((s, r) => s + r.operatingProfit, 0);
   useEffect(() => {
-    // The executive report opens by itself once per browser session when the dashboard loads
+    // The executive report opens by itself on the first Dashboard visit of each day
     // (it links to the loss-making clients pop-up).
+    // Once per calendar day (first visit of the day), not once per browser tab.
+    const dayKey = toKey(TODAY);
     let seen = false;
-    try { seen = sessionStorage.getItem("gloria_exec_popup") === "1"; } catch { /* ignore */ }
-    if (!seen) { setExecModal(true); try { sessionStorage.setItem("gloria_exec_popup", "1"); } catch { /* ignore */ } }
+    try { seen = localStorage.getItem("gloria_exec_popup_day") === dayKey; } catch { /* ignore */ }
+    if (!seen) { setExecModal(true); try { localStorage.setItem("gloria_exec_popup_day", dayKey); } catch { /* ignore */ } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2910,16 +2936,7 @@ function AdminDashboard({ leaveRequests = [], lockedWeeks = [], employees, clien
         </div>
       )}
       {execModal && (
-        <ExecutiveReportModal onClose={() => setExecModal(false)} onOpenLoss={() => setLossModal(true)} onOpenCard={onOpenCard}
-          periodLabelText={periodLabel(period, rangeStart, rangeEnd)} employees={employees} clients={clients} entries={entries} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks}
-          lossCount={lossClients.length} lossTotal={lossTotal}
-          kpis={[
-            { label: "Revenue", value: fmtEur(totalRevenue), sub: `${totalHours.toFixed(0)}h logged`, accent: C.accent },
-            { label: "Labor cost", value: fmtEur(totalCost), sub: totalRevenue > 0 ? `${Math.round((totalCost / totalRevenue) * 100)}% of revenue` : "" },
-            { label: "Gross profit", value: fmtEur(totalProfit), sub: overallMargin != null ? `${overallMargin.toFixed(0)}% margin` : "", accent: totalProfit < 0 ? C.danger : undefined },
-            { label: "Operating profit", value: fmtEur(operatingProfit), sub: operatingMargin != null ? `${operatingMargin.toFixed(0)}% margin` : "", accent: operatingProfit < 0 ? C.danger : undefined },
-            { label: "Effective rate", value: avgEffectiveRate ? "€" + avgEffectiveRate.toFixed(0) + "/h" : "—", sub: "revenue ÷ hours" },
-          ]} />
+        <ExecutiveReportModal onClose={() => setExecModal(false)} onOpenCard={onOpenCard} employees={employees} clients={clients} entries={entries} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks} operatingExpenses={operatingExpenses} rentalExpenses={rentalExpenses} />
       )}
       {lossModal && (
         <Modal title={`Clients with negative operating profit — ${periodLabel(period, rangeStart, rangeEnd)}`} onClose={() => setLossModal(false)} width={760}>
@@ -5269,7 +5286,8 @@ const REPORT_METRICS_FOR = {
   activity: ["hours"],
 };
 
-function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
+function AdminReportBuilder({ employees, clients, entries, rentalExpenses, tasks = [], billingStatuses = [], leaveRequests = [], lockedWeeks = [], operatingExpenses = [], onOpenCard }) {
+  const [execModal, setExecModal] = useState(false);
   const [dimension, setDimension] = useState("client");
   const [metric, setMetric] = useState("profit");
   const [period, setPeriod] = useState("quarter");
@@ -5471,7 +5489,8 @@ function AdminReportBuilder({ employees, clients, entries, rentalExpenses }) {
   return (
     <div>
       <PageHeader title="Reports" sub="Pick a dimension and a metric to build the table you need, from the whole database."
-        right={<Btn variant="secondary" onClick={exportReport}>Export to Excel</Btn>} />
+        right={<div style={{ display: "flex", gap: 8 }}><Btn onClick={() => setExecModal(true)}>Executive report</Btn><Btn variant="secondary" onClick={exportReport}>Export to Excel</Btn></div>} />
+      {execModal && <ExecutiveReportModal onClose={() => setExecModal(false)} onOpenCard={onOpenCard} employees={employees} clients={clients} entries={entries} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks} operatingExpenses={operatingExpenses} rentalExpenses={rentalExpenses} />}
 
       <Panel style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
@@ -8595,7 +8614,7 @@ export default function App() {
           <AdminOpex expenses={operatingExpenses} refetchOpex={refetchOpex} rentalExpenses={rentalExpenses} />
         )}
         {user.role === "admin" && view === "reports" && (
-          <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} />
+          <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks} operatingExpenses={operatingExpenses} onOpenCard={openClientCard} />
         )}
         {user.role === "admin" && view === "compliance" && (
           <CompliancePage user={user} clients={clients} employees={employees} amlRecords={amlRecords} cases={amlCases} requests={authorityRequests}
