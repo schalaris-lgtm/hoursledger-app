@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Building2, Clock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, LogOut, X, Lock, Unlock, AlertTriangle,
   Check, Search, CalendarDays, CalendarRange, ClipboardCheck, Euro, Home, SlidersHorizontal, Receipt, Wallet,
-  ListChecks, MessageSquare, ArrowLeft, Phone, Mail, UserRound
+  ListChecks, MessageSquare, ArrowLeft, Phone, Mail, UserRound, Filter
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend
@@ -1058,6 +1058,7 @@ function Sidebar({ user, view, setView }) {
     { key: "calendar", label: "Calendar", icon: CalendarRange },
     { key: "clients", label: "Clients", icon: Building2 },
     { key: "billing", label: "Billing", icon: Receipt },
+    { key: "pipeline", label: "Pipeline", icon: Filter },
   ];
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -1067,6 +1068,7 @@ function Sidebar({ user, view, setView }) {
     { key: "leaveapprovals", label: "Leave Approvals", icon: ClipboardCheck },
     { key: "calendar", label: "Calendar", icon: CalendarRange },
     { key: "clients", label: "Clients", icon: Building2 },
+    { key: "pipeline", label: "Pipeline", icon: Filter },
     { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "employees", label: "Employees", icon: Users },
     { key: "rental", label: "Rental", icon: Home },
@@ -1230,6 +1232,7 @@ const mapClientRow = (r) => ({
   contractHourlyRate: r.contract_hourly_rate === null || r.contract_hourly_rate === undefined ? null : Number(r.contract_hourly_rate), contractNoticeMonths: r.contract_notice_months === null || r.contract_notice_months === undefined ? null : Number(r.contract_notice_months),
   contractIncludeAml: r.contract_include_aml !== false, contractStartDate: r.contract_start_date || null, contractOtherFeesText: r.contract_other_fees_text || "",
   vatRate: r.vat_rate === null || r.vat_rate === undefined ? 24 : Number(r.vat_rate),
+  pipelineStage: r.pipeline_stage || "new", stageChangedAt: r.stage_changed_at || null, lostReason: r.lost_reason || "", lostAt: r.lost_at || null, wonAt: r.won_at || null,
   invoiceType: r.invoice_type && MYDATA_INVOICE_TYPES[r.invoice_type] ? r.invoice_type : "2.1", vatExemptionCategory: r.vat_exemption_category === null || r.vat_exemption_category === undefined ? null : Number(r.vat_exemption_category), fixedService: r.fixed_service && INVOICE_SERVICES[r.fixed_service] ? r.fixed_service : "accounting", paymentBank: r.payment_bank && FIRM_BANK_ACCOUNTS[r.payment_bank] ? r.payment_bank : "",
   annualFeeEnabled: r.annual_fee_enabled === true, annualFee: r.annual_fee === null || r.annual_fee === undefined ? null : Number(r.annual_fee), annualFeeMonth: r.annual_fee_month || "", annualFeeCc: r.annual_fee_cc || "accounting", annualFeeExtraId: r.annual_fee_extra_id || null,
   formationFeeEnabled: r.formation_fee_enabled === true, formationFee: r.formation_fee === null || r.formation_fee === undefined ? null : Number(r.formation_fee), formationFeeMonth: r.formation_fee_month || "", formationFeeCc: r.formation_fee_cc || "other", formationFeeExtraId: r.formation_fee_extra_id || null,
@@ -1563,8 +1566,8 @@ const TASK_STATUSES = { open: "Open", in_progress: "In progress", done: "Done" }
 const TASK_STATUS_TONE = { open: "neutral", in_progress: "warn", done: "accent" };
 // Open tasks: overdue if the due date has passed.
 const taskIsOverdue = (t) => t.status !== "done" && t.dueDate && fromKey(t.dueDate) < TODAY;
-const LIFECYCLE_LABELS = { lead: "Lead", onboarding: "Onboarding", live: "Live", ended: "Ended" };
-const LIFECYCLE_TONE = { lead: "neutral", onboarding: "warn", live: "accent", ended: "danger" };
+const LIFECYCLE_LABELS = { lead: "Lead", onboarding: "Onboarding", live: "Live", ended: "Ended", lost: "Lost" };
+const LIFECYCLE_TONE = { lead: "neutral", onboarding: "warn", live: "accent", ended: "danger", lost: "danger" };
 // Onboarding progress for a client: its checklist tasks and how many are done.
 function onboardingProgress(client, tasks) {
   const list = tasks.filter((t) => t.clientId === client.id && t.kind === "onboarding");
@@ -7873,6 +7876,264 @@ function DueDiligenceTab({ user, client, employees, aml, ubos, tasks, documents 
 /* Client card — profile, contacts, notes & communication, tasks           */
 /* ---------------------------------------------------------------------- */
 
+// ======================= SALES PIPELINE (lead → won) =======================
+const PIPELINE_STAGES = [
+  { key: "new", label: "Νέο lead" },
+  { key: "contact", label: "Επαφή / meeting" },
+  { key: "proposal", label: "Προσφορά" },
+  { key: "agreement", label: "Αναμονή συμφωνίας" },
+];
+const PIPELINE_LABEL = Object.fromEntries(PIPELINE_STAGES.map((s) => [s.key, s.label]));
+const LOST_REASONS = ["Τιμή / αμοιβή", "Επέλεξε άλλο γραφείο", "Δεν ανταποκρίθηκε", "Δεν χρειάζεται πλέον", "Εκτός αντικειμένου μας", "Άλλο"];
+const daysSince = (iso) => (iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null);
+// A lead is "stalled" when neither its stage nor any contact (note or e-mail) moved for more than 7 days.
+const leadIdleDays = (c) => daysSince(c.stageChangedAt) ?? 0;
+const leadStalled = (c) => leadIdleDays(c) > 7;
+const fmtDateGr = (k) => (k ? k.split("-").reverse().join("/") : "—");
+
+// Won: asks about company formation, creates the onboarding checklist and moves the lead to onboarding.
+async function winLead(client, templates, tasks, user) {
+  const includeFormation = window.confirm("WON! Είναι νεοσύστατη εταιρεία;\n\nOK = δημιουργία και των tasks σύστασης (ΥΜΣ, ΓΕΜΗ, τράπεζα, ΕΦΚΑ…).\nCancel = υπάρχουσα εταιρεία, μόνο το βασικό onboarding checklist.");
+  return await startOnboarding(client, templates, tasks, user, { includeFormation });
+}
+
+function LostLeadModal({ client, onClose, onSaved }) {
+  const [reason, setReason] = useState(LOST_REASONS[0]);
+  const [detail, setDetail] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    const text = detail.trim() ? `${reason} — ${detail.trim()}` : reason;
+    const { error } = await supabase.from("clients").update({ lifecycle: "lost", lost_reason: text, active: false }).eq("id", client.id);
+    setBusy(false);
+    if (error) { window.alert(`Couldn't save: ${error.message}`); return; }
+    onSaved();
+  }
+  return (
+    <Modal title={`Lost — ${client.name}`} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Λόγος">
+          <select style={inputStyle} value={reason} onChange={(e) => setReason(e.target.value)}>{LOST_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+        </Field>
+        <Field label="Σχόλιο (προαιρετικό)"><input style={inputStyle} value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="π.χ. πήγε σε γραφείο με χαμηλότερη τιμή" /></Field>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={busy}>Mark as lost</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+// Reminder = a task for the manager (or anyone) linked to the lead. The Slack DM reminds on the due date.
+function LeadTaskModal({ client, user, employees, onClose, onSaved }) {
+  const [title, setTitle] = useState("");
+  const [assignee, setAssignee] = useState(client.accountManagerId || user.id);
+  const [date, setDate] = useState(toKey(addDays(TODAY, 3)));
+  const [stage, setStage] = useState(client.pipelineStage);
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    if (stage !== client.pipelineStage) {
+      const { error: se } = await supabase.from("clients").update({ pipeline_stage: stage }).eq("id", client.id);
+      if (se) { setBusy(false); window.alert(`Couldn't save: ${se.message}`); return; }
+    }
+    if (title.trim()) {
+      const { error } = await supabase.from("tasks").insert({ client_id: client.id, kind: "general", title: title.trim(), assigned_to: assignee || null, created_by: user.id, due_date: date || null, priority: "normal", status: "open" });
+      if (error) { setBusy(false); window.alert(`Couldn't create the task: ${error.message}`); return; }
+    }
+    setBusy(false);
+    onSaved();
+  }
+  return (
+    <Modal title={`Task / στάδιο — ${client.name}`} onClose={onClose} width={480}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Στάδιο">
+          <select style={inputStyle} value={stage} onChange={(e) => setStage(e.target.value)}>{PIPELINE_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</select>
+        </Field>
+        <Field label="Νέο task / υπενθύμιση (άφησέ το κενό αν δεν χρειάζεται)"><input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="π.χ. Αποστολή προσφοράς, τηλέφωνο, ραντεβού" /></Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Ανάθεση σε">
+            <select style={inputStyle} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+              <option value="">—</option>{employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Προθεσμία"><input type="date" style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={busy}>Save</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+// Buttons shared by the pipeline cards and the client card: follow-up, stage, Won, Lost / Reopen.
+function LeadControls({ client, user, employees, templates, tasks, refetchClients, refetchTasks, refetchNotes, compact }) {
+  const [followUp, setFollowUp] = useState(false);
+  const [lost, setLost] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const idx = PIPELINE_STAGES.findIndex((s) => s.key === client.pipelineStage);
+  const done = async () => { setFollowUp(false); setLost(false); await refetchClients(); if (refetchNotes) refetchNotes(); };
+  async function move(key) {
+    setBusy(true);
+    const { error } = await supabase.from("clients").update({ pipeline_stage: key }).eq("id", client.id);
+    setBusy(false);
+    if (error) { window.alert(`Couldn't move: ${error.message}`); return; }
+    refetchClients();
+  }
+  async function win() {
+    setBusy(true);
+    const ok = await winLead(client, templates, tasks, user);
+    setBusy(false);
+    if (ok) { await refetchClients(); if (refetchTasks) refetchTasks(); }
+  }
+  async function reopen() {
+    const { error } = await supabase.from("clients").update({ lifecycle: "lead", active: true }).eq("id", client.id);
+    if (error) { window.alert(`Couldn't reopen: ${error.message}`); return; }
+    refetchClients();
+  }
+  if (client.lifecycle === "lost") return <Btn size="sm" variant="secondary" onClick={reopen}>Reopen lead</Btn>;
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      {!compact && (
+        <select style={{ ...inputStyle, padding: "4px 6px", fontSize: 12.5 }} value={client.pipelineStage} onChange={(e) => move(e.target.value)} disabled={busy}>
+          {PIPELINE_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+      )}
+      {compact && idx > 0 && <button style={iconBtnStyle} title="Προηγούμενο στάδιο" disabled={busy} onClick={() => move(PIPELINE_STAGES[idx - 1].key)}><ChevronLeft size={16} color={C.inkMuted} /></button>}
+      <Btn size="sm" variant="secondary" onClick={() => setFollowUp(true)}>+ Task</Btn>
+      {compact && idx < PIPELINE_STAGES.length - 1 && <button style={iconBtnStyle} title="Επόμενο στάδιο" disabled={busy} onClick={() => move(PIPELINE_STAGES[idx + 1].key)}><ChevronRight size={16} color={C.accentDark} /></button>}
+      <Btn size="sm" icon={Check} onClick={win} disabled={busy}>Won</Btn>
+      <Btn size="sm" variant="ghost" onClick={() => setLost(true)}>Lost</Btn>
+      {followUp && <LeadTaskModal client={client} user={user} employees={employees} onClose={() => setFollowUp(false)} onSaved={async () => { await done(); if (refetchTasks) refetchTasks(); }} />}
+      {lost && <LostLeadModal client={client} onClose={() => setLost(false)} onSaved={done} />}
+    </div>
+  );
+}
+
+function NewLeadModal({ user, employees, onClose, onSaved }) {
+  const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [phone, setPhone] = useState("");
+  const [contact, setContact] = useState(""); const [source, setSource] = useState(""); const [fee, setFee] = useState("");
+  const [owner, setOwner] = useState(user.id);
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    if (!name.trim()) return;
+    setBusy(true);
+    const { data, error } = await supabase.from("clients").insert({
+      name: name.trim(), lifecycle: "lead", pipeline_stage: "new", account_manager_id: owner || null, email: email.trim() || null, phone: phone.trim() || null,
+      lead_source: source.trim() || null, expected_fee: fee === "" ? null : Number(fee),
+    }).select().single();
+    if (error || !data) { setBusy(false); window.alert(`Couldn't create lead: ${error ? error.message : "unknown error"}`); return; }
+    if (contact.trim() || email.trim()) {
+      await supabase.from("client_contacts").insert({ client_id: data.id, name: contact.trim() || name.trim(), email: email.trim() || null, phone: phone.trim() || null, is_primary: true });
+    }
+    setBusy(false);
+    onSaved();
+  }
+  return (
+    <Modal title="Νέο lead" onClose={onClose} width={520}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ gridColumn: "1 / span 2" }}><Field label="Επωνυμία / όνομα"><input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field></div>
+        <Field label="Επαφή (πρόσωπο)"><input style={inputStyle} value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
+        <Field label="Email επαφής"><input style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+        <Field label="Τηλέφωνο"><input style={inputStyle} value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
+        <Field label="Πηγή"><input style={inputStyle} value={source} onChange={(e) => setSource(e.target.value)} placeholder="σύσταση, site, LinkedIn…" /></Field>
+        <Field label="Εκτιμώμενη αμοιβή (€ / μήνα)"><input type="number" style={inputStyle} value={fee} onChange={(e) => setFee(e.target.value)} /></Field>
+        <Field label="Υπεύθυνος">
+          <select style={inputStyle} value={owner} onChange={(e) => setOwner(e.target.value)}>
+            <option value="">—</option>{employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Field>
+        <div style={{ gridColumn: "1 / span 2", display: "flex", justifyContent: "flex-end", gap: 8 }}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={busy || !name.trim()}>Create lead</Btn></div>
+      </div>
+    </Modal>
+  );
+}
+
+function PipelinePage({ user, clients, employees, tasks, templates, refetchClients, refetchTasks, refetchNotes, onOpenCard }) {
+  const [mine, setMine] = useState(false);
+  const [newModal, setNewModal] = useState(false);
+  const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
+  const leads = clients.filter((c) => c.lifecycle === "lead" && (!mine || c.accountManagerId === user.id));
+  const cutoff = Date.now() - 90 * 86400000;
+  const recentWon = clients.filter((c) => c.wonAt && new Date(c.wonAt).getTime() >= cutoff && (!mine || c.accountManagerId === user.id)).sort((a, b) => b.wonAt.localeCompare(a.wonAt));
+  const recentLost = clients.filter((c) => c.lifecycle === "lost" && c.lostAt && new Date(c.lostAt).getTime() >= cutoff && (!mine || c.accountManagerId === user.id)).sort((a, b) => b.lostAt.localeCompare(a.lostAt));
+  const decided = recentWon.length + recentLost.length;
+  const stalled = leads.filter(leadStalled);
+  const openLeadTasks = tasks.filter((t) => t.status !== "done" && leads.some((c) => c.id === t.clientId));
+  const overdueTasks = openLeadTasks.filter((t) => t.dueDate && t.dueDate < toKey(TODAY));
+  const noTask = leads.filter((c) => !openLeadTasks.some((t) => t.clientId === c.id));
+  const expected = leads.reduce((a, c) => a + (c.expectedFee || 0), 0);
+  const lostByReason = {};
+  recentLost.forEach((c) => { const k = (c.lostReason || "—").split(" — ")[0]; lostByReason[k] = (lostByReason[k] || 0) + 1; });
+
+  return (
+    <div>
+      <PageHeader title="Pipeline" sub="Από το πρώτο lead μέχρι το onboarding. Τα leads καταχωρούνται χειροκίνητα. Για υπενθύμιση πρόσθεσε task (+ Task) στον manager· έρχεται DM στο Slack την ημέρα της προθεσμίας."
+        right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ fontFamily: sans, fontSize: 12.5, color: C.inkMuted, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />Μόνο τα δικά μου</label>
+          <Btn icon={Plus} onClick={() => setNewModal(true)}>Νέο lead</Btn>
+        </div>} />
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatCard label="Ανοιχτά leads" value={String(leads.length)} sub={expected ? `εκτ. ${fmtEur(expected)}/μήνα` : "—"} />
+        <StatCard label="Στάσιμα > 7 μέρες" value={String(stalled.length)} accent={stalled.length ? C.warn || C.danger : undefined} sub="στο ίδιο στάδιο" />
+        <StatCard label="Εκπρόθεσμα tasks" value={String(overdueTasks.length)} accent={overdueTasks.length ? C.danger : undefined} sub={noTask.length + " leads χωρίς ανοιχτό task"} />
+        <StatCard label="Won / Lost (90 μέρες)" value={`${recentWon.length} / ${recentLost.length}`} accent={C.accent} sub={decided ? `${Math.round((recentWon.length / decided) * 100)}% μετατροπή` : "—"} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12, alignItems: "start", marginBottom: 22 }}>
+        {PIPELINE_STAGES.map((st) => {
+          const list = leads.filter((c) => c.pipelineStage === st.key).sort((a, b) => (a.stageChangedAt || "").localeCompare(b.stageChangedAt || ""));
+          return (
+            <div key={st.key} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: C.ink, margin: "2px 4px 8px" }}>
+                <span>{st.label}</span><span style={{ fontFamily: mono, color: C.inkMuted }}>{list.length}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {list.length === 0 && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkFaint, padding: "6px 4px" }}>—</div>}
+                {list.map((c) => {
+                  const idle = leadIdleDays(c);
+                  return (
+                    <div key={c.id} style={{ background: C.surface, border: `1px solid ${idle > 7 ? C.danger : C.border}`, borderRadius: 8, padding: 10, fontFamily: sans }}>
+                      <button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13.5, fontWeight: 700, color: C.accentDark, textAlign: "left" }}>{c.name}</button>
+                      <div style={{ fontSize: 12, color: C.inkMuted, marginTop: 3 }}>{empName(c.accountManagerId)}{c.expectedFee ? ` · ${fmtEur(c.expectedFee)}/μήνα` : ""}{c.leadSource ? ` · ${c.leadSource}` : ""}</div>
+                      {(() => { const ot = tasks.filter((t) => t.clientId === c.id && t.status !== "done").sort((x, y) => (x.dueDate || "9").localeCompare(y.dueDate || "9")); const t0 = ot[0]; return (
+                        <div style={{ fontSize: 12.5, color: t0 && t0.dueDate && t0.dueDate < toKey(TODAY) ? C.danger : C.ink, marginTop: 6 }}>
+                          {t0 ? <>➜ {t0.title}{t0.dueDate ? <> · <strong>{fmtDateGr(t0.dueDate)}</strong></> : ""}{ot.length > 1 ? ` (+${ot.length - 1})` : ""}</> : <span style={{ color: C.inkFaint }}>Χωρίς ανοιχτό task</span>}
+                        </div>); })()}
+                      <div style={{ fontSize: 11.5, color: idle > 7 ? C.danger : C.inkFaint, marginTop: 4 }}>Στο στάδιο {idle} μ.{idle > 7 ? " · στάσιμο" : ""}</div>
+                      <div style={{ marginTop: 8 }}><LeadControls compact client={c} user={user} employees={employees} templates={templates} tasks={tasks} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} /></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
+        <Panel>
+          <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Won τις τελευταίες 90 μέρες ({recentWon.length})</div>
+          {recentWon.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>—</div> : recentWon.map((c) => (
+            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontFamily: sans, fontSize: 13, padding: "5px 0", borderBottom: `1px solid ${C.border}` }}>
+              <button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13, color: C.accentDark, textAlign: "left" }}>{c.name}</button>
+              <span style={{ color: C.inkMuted }}>{empName(c.accountManagerId)} · {c.wonAt.slice(0, 10).split("-").reverse().join("/")} · <Badge tone={LIFECYCLE_TONE[c.lifecycle]}>{LIFECYCLE_LABELS[c.lifecycle]}</Badge></span>
+            </div>
+          ))}
+        </Panel>
+        <Panel>
+          <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 4 }}>Lost τις τελευταίες 90 μέρες ({recentLost.length})</div>
+          {Object.keys(lostByReason).length > 0 && <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 8 }}>{Object.entries(lostByReason).map(([k, n]) => `${k}: ${n}`).join(" · ")}</div>}
+          {recentLost.length === 0 ? <div style={{ fontFamily: sans, fontSize: 12.5, color: C.inkFaint }}>—</div> : recentLost.map((c) => (
+            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontFamily: sans, fontSize: 13, padding: "5px 0", borderBottom: `1px solid ${C.border}` }}>
+              <div><button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13, color: C.accentDark }}>{c.name}</button><div style={{ fontSize: 11.5, color: C.inkMuted }}>{c.lostReason || "—"}</div></div>
+              <LeadControls compact client={c} user={user} employees={employees} templates={templates} tasks={tasks} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} />
+            </div>
+          ))}
+        </Panel>
+      </div>
+      {newModal && <NewLeadModal user={user} employees={employees} onClose={() => setNewModal(false)} onSaved={() => { setNewModal(false); refetchClients(); }} />}
+    </div>
+  );
+}
+
 const formFromClient = (c) => ({ name: c.name, afm: c.afm, doy: c.doy, legalForm: c.legalForm, address: c.address, email: c.email, phone: c.phone, accountManagerId: c.accountManagerId || "", generalNotes: c.generalNotes,
   representativeName: c.representativeName, representativeAfm: c.representativeAfm, representativeIdType: c.representativeIdType, representativeIdNumber: c.representativeIdNumber, representativeEmail: c.representativeEmail, representativePhone: c.representativePhone });
 function ClientCard({ user, client, employees, contacts, notes, tasks, entries, templates = [], aml = null, ubos = [], refetchDueDiligence, documents = [], refetchDocuments, firm = DEFAULT_FIRM, saveFirm, initialTab = "details", refetchClients, refetchContacts, refetchNotes, refetchTasks, onBack }) {
@@ -8029,10 +8290,24 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
         </Panel>
       )}
       {showFlow && <Modal title="Client onboarding process" onClose={() => setShowFlow(false)} width={680}><OnboardingFlowchart /></Modal>}
-      {client.lifecycle === "lead" && (
-        <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${C.inkFaint}` }}>
-          <Btn size="sm" variant="ghost" onClick={() => setShowFlow(true)}>ⓘ Process</Btn>
-          <div style={{ fontFamily: sans, fontSize: 13, color: C.ink }}>Prospect — not yet set up. Press <strong>Start onboarding</strong> when the engagement is agreed: the setup checklist ({templates.filter((t) => t.active).length} tasks) is created for this client and assigned to the account manager.</div>
+      {(client.lifecycle === "lead" || client.lifecycle === "lost") && (
+        <Panel style={{ marginBottom: 18, borderLeft: `4px solid ${client.lifecycle === "lost" ? C.danger : C.inkFaint}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: sans, fontSize: 13, color: C.ink, flex: 1, minWidth: 260 }}>
+              {client.lifecycle === "lost" ? (
+                <><strong>Lost</strong> — {client.lostReason || "χωρίς καταχωρημένο λόγο"}{client.lostAt ? ` (${fmtDateGr(client.lostAt.slice(0, 10))})` : ""}</>
+              ) : (
+                <>
+                  <div><strong>Pipeline:</strong> {PIPELINE_LABEL[client.pipelineStage]} · υπεύθυνος {empName(client.accountManagerId)} · στο στάδιο {daysSince(client.stageChangedAt) ?? 0} μ.</div>
+                  <div style={{ marginTop: 4, fontSize: 12, color: C.inkMuted }}>Ανοιχτά tasks: {openTasks.length}. Το <strong>Won</strong> δημιουργεί το onboarding checklist ({templates.filter((t) => t.active).length} tasks) για τον υπεύθυνο.</div>
+                </>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Btn size="sm" variant="ghost" onClick={() => setShowFlow(true)}>ⓘ Process</Btn>
+              <LeadControls client={client} user={user} employees={employees} templates={templates} tasks={tasks} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} />
+            </div>
+          </div>
         </Panel>
       )}
 
@@ -8701,6 +8976,9 @@ export default function App() {
         )}
         {view === "clients" && (
           <AdminClients user={user} clients={clients} refetchClients={refetchClients} entries={entries} onOpenCard={openClientCard} tasks={tasks} templates={templates} refetchTasks={refetchTasks} amlRecords={amlRecords} employees={employees} />
+        )}
+        {view === "pipeline" && (
+          <PipelinePage user={user} clients={clients} employees={employees} tasks={tasks} templates={templates} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} onOpenCard={openClientCard} />
         )}
         {view === "clientcard" && (
           <ClientCard user={user} client={clients.find((c) => c.id === cardClientId)} employees={employees} contacts={contacts} notes={notes} tasks={tasks} entries={entries} templates={templates}
