@@ -1073,6 +1073,7 @@ function Sidebar({ user, view, setView }) {
     { key: "employees", label: "Employees", icon: Users },
     { key: "rental", label: "Rental", icon: Home },
     { key: "opex", label: "Operating Expenses", icon: Wallet },
+    { key: "pnl", label: "P&L", icon: Euro },
     { key: "reports", label: "Reports", icon: SlidersHorizontal },
     { key: "billing", label: "Billing", icon: Receipt },
     { key: "compliance", label: "AML Compliance", icon: AlertTriangle },
@@ -2447,6 +2448,130 @@ function computeClientProfitability({ employees, clients, entries, operatingExpe
 /* ---------------------------------------------------------------------- */
 /* Executive report pop-up — snapshot of KPIs and controls (admin Dashboard) */
 /* ---------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------- */
+/* Monthly P&L (admin) — same method as the Dashboard                      */
+/* ---------------------------------------------------------------------- */
+// Revenue by cost center, labor cost by the employee's department, operating
+// expenses by department. Company total = sum of the departments + "General".
+function computeMonthPnl({ employees, clients, entries, operatingExpenses, rentalExpenses }, rs, re) {
+  const rangeEntries = entries.filter((e) => { const d = fromKey(e.date); return d >= rs && d <= re; });
+  const emps = employees.filter((e) => employeeBilledInRange(e, rs, re)).map((emp) => ({
+    emp, department: emp.department || DEFAULT_DEPARTMENT, entries: rangeEntries.filter((e) => e.employeeId === emp.id), cost: periodEmployeeCost(emp, rs, re),
+  }));
+  const revenueByCC = emptyByCC();
+  let revenue = 0;
+  clients.filter((c) => clientBilledInRange(c, rs, re)).forEach((c) => {
+    const m = periodClientMetrics(c, rangeEntries.filter((e) => e.clientId === c.id), rs, re);
+    revenue += m.revenue;
+    Object.keys(revenueByCC).forEach((cc) => { revenueByCC[cc] += m.revenueByCostCenter?.[cc] || 0; });
+  });
+  const labor = emps.reduce((s, e) => s + e.cost, 0);
+  const opex = opexForRange(operatingExpenses, rs, re, rentalExpenses);
+  const f = { revenue, labor, gross: revenue - labor, opex: opex.total, operating: revenue - labor - opex.total };
+  OPEX_DISPLAY_CATEGORIES.forEach((k) => { f["cat:" + k] = opex.byCategory[k] || 0; });
+  let depRevenue = 0, depLabor = 0;
+  DEPARTMENTS.forEach((d) => {
+    const dr = d.costCenters.reduce((s, cc) => s + (revenueByCC[cc] || 0), 0);
+    const dl = emps.filter((e) => e.department === d.key).reduce((s, e) => s + e.cost, 0);
+    const dx = opex.byDepartment[d.key] || 0;
+    depRevenue += dr; depLabor += dl;
+    f[`dep:${d.key}:revenue`] = dr; f[`dep:${d.key}:labor`] = dl; f[`dep:${d.key}:gross`] = dr - dl; f[`dep:${d.key}:opex`] = dx; f[`dep:${d.key}:operating`] = dr - dl - dx;
+  });
+  // what is not attributable to a department: fees with no split yet, company-wide opex, labor of employees with an unknown department
+  const gr = revenue - depRevenue, gl = labor - depLabor, gx = opex.byDepartment[OPEX_GENERAL] || 0;
+  f["dep:general:revenue"] = gr; f["dep:general:labor"] = gl; f["dep:general:gross"] = gr - gl; f["dep:general:opex"] = gx; f["dep:general:operating"] = gr - gl - gx;
+  return f;
+}
+
+function PnlPage({ employees, clients, entries, operatingExpenses = [], rentalExpenses = [] }) {
+  const [year, setYear] = useState(TODAY.getFullYear());
+  const ctx = { employees, clients, entries, operatingExpenses, rentalExpenses };
+  const monthLabels = Array.from({ length: 12 }, (_, i) => new Date(year, i, 1).toLocaleDateString("en-GB", { month: "short" }));
+  const cols = Array.from({ length: 12 }, (_, i) => { const ms = new Date(year, i, 1); return ms > TODAY ? null : computeMonthPnl(ctx, ms, endOfMonth(ms)); });
+  const keys = cols.find(Boolean) ? Object.keys(cols.find(Boolean)) : [];
+  const total = {};
+  keys.forEach((k) => { total[k] = cols.reduce((s, c) => s + (c ? c[k] : 0), 0); });
+  const all = [...cols, total];
+  const val = (c, k) => (c ? c[k] : null);
+  const pct = (a, b) => (b > 0.005 ? (a / b) * 100 : null);
+  const n0 = (v) => (v === null || v === undefined ? "—" : Math.abs(v) < 0.5 ? "—" : fmtEur(v));
+  const pc = (v) => (v === null || v === undefined ? "—" : v.toFixed(0) + "%");
+  const catRows = OPEX_DISPLAY_CATEGORIES.filter((k) => cols.some((c) => c && Math.abs(c["cat:" + k]) > 0.5));
+  const deptList = [...DEPARTMENTS.map((d) => ({ key: d.key, label: d.label })), { key: "general", label: "General / not allocated" }]
+    .filter((d) => d.key !== "general" || ["revenue", "labor", "opex"].some((m) => Math.abs(total[`dep:general:${m}`] || 0) > 0.5));
+
+  // A row = label + a value per month + total. kind: "n" amount, "p" percentage.
+  const companyRows = [
+    { label: "Revenue", get: (c) => val(c, "revenue"), bold: true },
+    { label: "Labor cost", get: (c) => val(c, "labor") },
+    { label: "Gross profit", get: (c) => val(c, "gross"), bold: true, neg: true },
+    { label: "Gross margin", get: (c) => c ? pct(c.gross, c.revenue) : null, p: true },
+    ...catRows.map((k) => ({ label: OPEX_LABELS[k] || k, get: (c) => val(c, "cat:" + k), indent: true })),
+    { label: "Total operating expenses", get: (c) => val(c, "opex") },
+    { label: "Operating profit", get: (c) => val(c, "operating"), bold: true, neg: true },
+    { label: "Operating margin", get: (c) => c ? pct(c.operating, c.revenue) : null, p: true },
+  ];
+  const deptRows = deptList.flatMap((d) => [
+    { label: d.label, head: true },
+    { label: "Revenue", get: (c) => val(c, `dep:${d.key}:revenue`), indent: true },
+    { label: "Labor cost", get: (c) => val(c, `dep:${d.key}:labor`), indent: true },
+    { label: "Gross profit", get: (c) => val(c, `dep:${d.key}:gross`), indent: true, neg: true },
+    { label: "Operating expenses", get: (c) => val(c, `dep:${d.key}:opex`), indent: true },
+    { label: "Operating profit", get: (c) => val(c, `dep:${d.key}:operating`), bold: true, neg: true },
+  ]);
+  const cell = (r, c, i) => {
+    const v = r.get(c);
+    const red = r.neg && v !== null && v < -0.5;
+    return <Td key={i} mono right style={{ fontSize: 12, whiteSpace: "nowrap", color: red ? C.danger : undefined, fontWeight: r.bold || i === 12 ? 700 : 600, background: i === 12 ? C.bg : undefined }}>{r.p ? pc(v) : n0(v)}</Td>;
+  };
+  const renderRows = (rows) => rows.map((r, ri) => r.head
+    ? <tr key={ri}><Td style={{ fontWeight: 700, background: C.bg, color: C.accentDark }}>{r.label}</Td>{all.map((_, i) => <Td key={i} style={{ background: C.bg }} />)}</tr>
+    : <tr key={ri}><Td style={{ fontWeight: r.bold ? 700 : 400, paddingLeft: r.indent ? 22 : 8, whiteSpace: "nowrap", color: r.p ? C.inkMuted : undefined }}>{r.label}</Td>{all.map((c, i) => cell(r, c, i))}</tr>);
+  const headers = ["", ...monthLabels, `Total ${year}`];
+
+  const exportRows = (rows) => rows.map((r) => r.head ? { Line: r.label } : Object.fromEntries([["Line", r.label], ...monthLabels.map((m, i) => [m, r.get(cols[i]) === null ? "" : (r.p ? Number(r.get(cols[i]).toFixed(1)) : Number(r.get(cols[i]).toFixed(2)))]), [`Total ${year}`, r.get(total) === null ? "" : (r.p ? Number(r.get(total).toFixed(1)) : Number(r.get(total).toFixed(2)))]]));
+  const exportExcel = () => exportToExcel(`PnL_${year}.xlsx`, [{ name: "Company P&L", rows: exportRows(companyRows) }, { name: "By department", rows: exportRows(deptRows) }]);
+  const exportPdf = () => {
+    const tbl = (rows) => `<table><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => r.head
+      ? `<tr><td colspan="14" style="background:#f3f0e8;font-weight:700">${escapeHtml(r.label)}</td></tr>`
+      : `<tr><td style="${r.bold ? "font-weight:700;" : ""}${r.indent ? "padding-left:14px;" : ""}">${escapeHtml(r.label)}</td>${all.map((c, i) => { const v = r.get(c); return `<td style="text-align:right;${r.bold || i === 12 ? "font-weight:700;" : ""}${r.neg && v !== null && v < -0.5 ? "color:#b3261e;" : ""}">${r.p ? pc(v) : n0(v)}</td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
+    printHtml(`P&L ${year}`, `<style>@page{size:A4 landscape;margin:10mm}table{width:100%;border-collapse:collapse;font-size:9px;margin-bottom:14px}th,td{border-bottom:1px solid #ddd;padding:3px 4px;white-space:nowrap}th{text-align:right;color:#666}th:first-child{text-align:left}</style><h2>ACCOUNTING ACCO — P&amp;L ${year}</h2><h3>Company</h3>${tbl(companyRows)}<h3>By department</h3>${tbl(deptRows)}`);
+  };
+
+  const kpis = [
+    { label: `Revenue ${year}`, value: fmtEur(total.revenue || 0) },
+    { label: "Gross profit", value: fmtEur(total.gross || 0), sub: total.revenue > 0 ? pc(pct(total.gross, total.revenue)) + " margin" : undefined },
+    { label: "Operating expenses", value: fmtEur(total.opex || 0) },
+    { label: "Operating profit", value: fmtEur(total.operating || 0), sub: total.revenue > 0 ? pc(pct(total.operating, total.revenue)) + " margin" : undefined, accent: (total.operating || 0) < 0 ? C.danger : undefined },
+  ];
+  return (
+    <div>
+      <PageHeader title="P&L" sub="Month by month: revenue, labor cost, operating expenses, by company and by department. Months after the current one are not shown."
+        right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Btn size="sm" variant="secondary" icon={ChevronLeft} onClick={() => setYear(year - 1)}>{year - 1}</Btn>
+          <strong style={{ fontFamily: sans, fontSize: 14 }}>{year}</strong>
+          <Btn size="sm" variant="secondary" onClick={() => setYear(year + 1)} disabled={year >= TODAY.getFullYear()}>{year + 1}</Btn>
+          <Btn size="sm" variant="secondary" onClick={exportExcel}>Excel</Btn>
+          <Btn size="sm" variant="secondary" onClick={exportPdf}>PDF</Btn>
+        </div>} />
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        {kpis.map((k) => <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} accent={k.accent} />)}
+      </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Company P&L</div>
+        <TableShell headers={headers}>{renderRows(companyRows)}</TableShell>
+      </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14 }}>
+        <div style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>By department</div>
+        <TableShell headers={headers}>{renderRows(deptRows)}</TableShell>
+        <div style={{ fontFamily: sans, fontSize: 11.5, color: C.inkFaint, marginTop: 8 }}>
+          {DEPARTMENTS.map((d) => `${d.label} = ${d.costCenters.map((cc) => COST_CENTER_LABELS[cc]).join(" / ")}`).join(" · ")}. Labor cost = the cost of the employees assigned to the department. Fees with no split yet and company-wide expenses appear under “General / not allocated”. Same method as the Dashboard.
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ExecutiveReportModal({ initialTab = "profitability", onClose, employees, clients, entries, tasks, billingStatuses, leaveRequests, lockedWeeks, operatingExpenses = [], rentalExpenses = [], onOpenCard }) {
   // Financial snapshot: own period selector (month by default), same formulas as the Dashboard.
@@ -9244,6 +9369,9 @@ export default function App() {
         )}
         {user.role === "admin" && view === "opex" && (
           <AdminOpex expenses={operatingExpenses} refetchOpex={refetchOpex} rentalExpenses={rentalExpenses} />
+        )}
+        {user.role === "admin" && view === "pnl" && (
+          <PnlPage employees={employees} clients={clients} entries={entries} operatingExpenses={operatingExpenses} rentalExpenses={rentalExpenses} />
         )}
         {user.role === "admin" && view === "reports" && (
           <AdminReportBuilder employees={employees} clients={clients} entries={entries} rentalExpenses={rentalExpenses} tasks={tasks} billingStatuses={billingStatuses} leaveRequests={leaveRequests} lockedWeeks={lockedWeeks} operatingExpenses={operatingExpenses} onOpenCard={openClientCard} />
