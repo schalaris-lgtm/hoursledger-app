@@ -6437,7 +6437,7 @@ function NoteModal({ user, note, fixedClientId, clients, onClose, onSaved }) {
 
 // One task list used in three places: the client card, the admin Tasks
 // page and the employee's My Tasks page.
-function TaskList({ user, tasks, clients, employees, onEdit, onQuickStatus, showClient = true, showAssignee = true, onOpenCard }) {
+function TaskList({ user, tasks, clients, employees, onEdit, onQuickStatus, showClient = true, showAssignee = true, onOpenCard, selection = null }) {
   const empName = (id) => employees.find((e) => e.id === id)?.name || "Unassigned";
   const clientLabel = (id) => clients.find((c) => c.id === id)?.name || "—";
   const sorted = [...tasks].sort((a, b) => {
@@ -6446,11 +6446,12 @@ function TaskList({ user, tasks, clients, employees, onEdit, onQuickStatus, show
   });
   if (sorted.length === 0) return <EmptyState icon={ListChecks} title="No tasks" />;
   return (
-    <TableShell headers={["Due", "Task", ...(showClient ? ["Client"] : []), ...(showAssignee ? ["Assigned to"] : []), "Priority", "Status", ""]}>
+    <TableShell headers={[...(selection ? [""] : []), "Due", "Task", ...(showClient ? ["Client"] : []), ...(showAssignee ? ["Assigned to"] : []), "Priority", "Status", ""]}>
       {sorted.map((t) => {
         const overdue = taskIsOverdue(t);
         return (
           <tr key={t.id} style={{ opacity: t.status === "done" ? 0.55 : 1 }}>
+            {selection && <Td><input type="checkbox" disabled={!(user.role === "admin" || t.createdBy === user.id)} checked={selection.ids.has(t.id)} onChange={() => selection.toggle(t.id)} title={user.role === "admin" || t.createdBy === user.id ? "" : "Μπορείς να διαγράψεις μόνο tasks που δημιούργησες"} /></Td>}
             <Td mono style={{ color: overdue ? C.danger : t.dueDate ? undefined : C.inkFaint }}>{t.dueDate || "—"}</Td>
             <Td title={t.description || undefined}>
               <div style={{ fontWeight: 600 }}>{t.kind === "onboarding" && <span style={{ fontFamily: mono, fontSize: 10, color: C.warn, marginRight: 6 }}>{(t.stage || "setup").toUpperCase()}</span>}{t.title}</div>
@@ -6499,6 +6500,8 @@ function TasksPage({ user, mode, tasks, clients, employees, notes, refetchTasks,
   const [statusFilter, setStatusFilter] = useState("open");
   const [taskModal, setTaskModal] = useState(null); // null | "new" | task
   const [noteModal, setNoteModal] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selIds, setSelIds] = useState(() => new Set());
 
   const visible = tasks
     .filter((t) => mode === "all" || t.assignedTo === user.id || t.createdBy === user.id)
@@ -6510,6 +6513,17 @@ function TasksPage({ user, mode, tasks, clients, employees, notes, refetchTasks,
     const { error } = await supabase.from("tasks").update({ status, done_at: status === "done" ? toKey(TODAY) : null }).eq("id", t.id);
     if (error) { window.alert(`Couldn't update: ${error.message}`); return; }
     refetchTasks();
+  }
+  const canDelete = (t) => user.role === "admin" || t.createdBy === user.id;
+  const selection = selectMode ? { ids: selIds, toggle: (id) => setSelIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; }) } : null;
+  const selectAllVisible = () => setSelIds(new Set(visible.filter(canDelete).map((t) => t.id)));
+  async function deleteSelected() {
+    const ids = [...selIds].filter((id) => { const t = tasks.find((x) => x.id === id); return t && canDelete(t); });
+    if (!ids.length) return;
+    if (!window.confirm(`Να διαγραφούν ${ids.length} tasks; Η ενέργεια δεν αναιρείται.`)) return;
+    const { error } = await supabase.from("tasks").delete().in("id", ids);
+    if (error) { window.alert(`Couldn't delete: ${error.message}`); return; }
+    setSelIds(new Set()); setSelectMode(false); refetchTasks();
   }
   const myOpen = tasks.filter((t) => t.assignedTo === user.id && t.status !== "done");
   const myOverdue = myOpen.filter(taskIsOverdue);
@@ -6618,7 +6632,16 @@ function TasksPage({ user, mode, tasks, clients, employees, notes, refetchTasks,
             </select>
           </Field>
         </div>
-        <TaskList user={user} tasks={visible} clients={clients} employees={employees} onEdit={(t) => setTaskModal(t)} onQuickStatus={quickStatus} onOpenCard={onOpenCard} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+          <Btn size="sm" variant={selectMode ? "primary" : "secondary"} icon={Trash2} onClick={() => { setSelectMode(!selectMode); setSelIds(new Set()); }}>{selectMode ? "Έξοδος από επιλογή" : "Μαζική διαγραφή"}</Btn>
+          {selectMode && <>
+            <Btn size="sm" variant="ghost" onClick={selectAllVisible}>Επιλογή όλων των ορατών ({visible.filter(canDelete).length})</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => setSelIds(new Set())}>Καθαρισμός</Btn>
+            <Btn size="sm" variant="danger" icon={Trash2} onClick={deleteSelected} disabled={selIds.size === 0}>Διαγραφή επιλεγμένων ({selIds.size})</Btn>
+            <span style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted }}>Τα φίλτρα από πάνω (πελάτης, κατάσταση) περιορίζουν τη λίστα.</span>
+          </>}
+        </div>
+        <TaskList user={user} tasks={visible} clients={clients} employees={employees} onEdit={(t) => setTaskModal(t)} onQuickStatus={quickStatus} onOpenCard={onOpenCard} selection={selection} />
       </Panel>
 
       {mode === "mine" && recentNotes.length > 0 && (
@@ -8349,6 +8372,15 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
     await supabase.from("client_contacts").delete().eq("id", x.id);
     refetchContacts();
   }
+  // Admin: remove the onboarding checklist of this client (e.g. "Won" pressed by mistake). Only kind = onboarding is touched.
+  async function deleteOnboardingTasks(includeDone) {
+    const list = progress.list.filter((t) => includeDone || t.status !== "done");
+    if (!list.length) return;
+    if (!window.confirm(`Να διαγραφούν ${list.length} tasks onboarding του ${client.name}${includeDone ? " (και τα ολοκληρωμένα)" : " (μόνο τα ανοιχτά)"}; Η ενέργεια δεν αναιρείται.`)) return;
+    const { error } = await supabase.from("tasks").delete().in("id", list.map((t) => t.id));
+    if (error) { window.alert(`Couldn't delete: ${error.message}`); return; }
+    refetchTasks();
+  }
   async function quickStatus(t, status) {
     await supabase.from("tasks").update({ status, done_at: status === "done" ? toKey(TODAY) : null }).eq("id", t.id);
     refetchTasks();
@@ -8583,6 +8615,12 @@ function ClientCard({ user, client, employees, contacts, notes, tasks, entries, 
 
       {tab === "tasks" && (
         <div>
+          {user.role === "admin" && progress.total > 0 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 10 }}>
+              <Btn size="sm" variant="danger" icon={Trash2} onClick={() => deleteOnboardingTasks(false)}>Διαγραφή ανοιχτών tasks onboarding ({progress.list.filter((t) => t.status !== "done").length})</Btn>
+              <Btn size="sm" variant="danger" icon={Trash2} onClick={() => deleteOnboardingTasks(true)}>Διαγραφή ολόκληρου του checklist ({progress.total})</Btn>
+            </div>
+          )}
           {progress.total > 0 && ONBOARDING_STAGES.map((stg) => {
             const list = progress.list.filter((t) => (t.stage || "setup") === stg.key);
             if (list.length === 0) return null;
