@@ -8147,6 +8147,51 @@ function LeadControls({ client, user, employees, contacts = [], firm, templates,
   );
 }
 
+
+// Edit every lead detail without leaving the Pipeline page.
+function EditLeadModal({ client, employees, contacts = [], onClose, onSaved }) {
+  const prim = contacts.find((c) => c.clientId === client.id && c.isPrimary) || contacts.find((c) => c.clientId === client.id);
+  const [f, setF] = useState({ name: client.name, legalForm: client.legalForm || "", afm: client.afm || "", email: client.email || "", phone: client.phone || "", source: client.leadSource || "", owner: client.accountManagerId || "", stage: client.pipelineStage, fee: client.expectedFee ? String(client.expectedFee) : "", contact: prim?.name || client.representativeName || "" });
+  const [offer, setOffer] = useState(() => emptyOffer(client));
+  const [showFees, setShowFees] = useState(!!client.proposal);
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  async function save() {
+    if (!f.name.trim()) { window.alert("Το lead χρειάζεται όνομα."); return; }
+    setBusy(true);
+    const hasOffer = offerMonthly(offer) || offerNum(offer.annualFee) || offerNum(offer.formationFee) || offerNum(offer.payrollExtra) || offerNum(offer.hourlyRate);
+    const { error } = await supabase.from("clients").update({
+      name: f.name.trim(), legal_form: f.legalForm || null, afm: f.afm.trim() || null, email: f.email.trim() || null, phone: f.phone.trim() || null,
+      lead_source: f.source.trim() || null, account_manager_id: f.owner || null, pipeline_stage: f.stage,
+      expected_fee: offerMonthly(offer) || (f.fee === "" ? null : Number(f.fee)), proposal: hasOffer ? offer : client.proposal || null,
+    }).eq("id", client.id);
+    if (error) { setBusy(false); window.alert(`Couldn't save: ${error.message}`); return; }
+    await syncClientContacts(client.id, { name: f.name.trim(), email: f.email.trim(), phone: f.phone.trim(), repName: f.contact.trim(), repEmail: f.email.trim(), repPhone: f.phone.trim() }, contacts);
+    setBusy(false);
+    onSaved();
+  }
+  return (
+    <Modal title={`Επεξεργασία — ${client.name}`} onClose={onClose} width={560}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxHeight: "72vh", overflowY: "auto", paddingRight: 4 }}>
+        <div style={{ gridColumn: "1 / span 2" }}><Field label="Επωνυμία / όνομα"><input style={inputStyle} value={f.name} onChange={set("name")} /></Field></div>
+        <Field label="Τύπος εταιρείας"><select style={inputStyle} value={f.legalForm} onChange={set("legalForm")}><option value="">—</option>{LEGAL_FORMS.map((l) => <option key={l} value={l}>{l}</option>)}</select></Field>
+        <Field label="ΑΦΜ"><input style={inputStyle} value={f.afm} onChange={set("afm")} /></Field>
+        <Field label="Επαφή (πρόσωπο)"><input style={inputStyle} value={f.contact} onChange={set("contact")} /></Field>
+        <Field label="Email"><input style={inputStyle} value={f.email} onChange={set("email")} /></Field>
+        <Field label="Τηλέφωνο"><input style={inputStyle} value={f.phone} onChange={set("phone")} /></Field>
+        <Field label="Πηγή"><input style={inputStyle} value={f.source} onChange={set("source")} /></Field>
+        <Field label="Υπεύθυνος"><select style={inputStyle} value={f.owner} onChange={set("owner")}><option value="">—</option>{employees.filter((e) => e.active || e.id === f.owner).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
+        <Field label="Στάδιο"><select style={inputStyle} value={f.stage} onChange={set("stage")}>{PIPELINE_STAGES.map((st) => <option key={st.key} value={st.key}>{st.label}</option>)}</select></Field>
+        <div style={{ gridColumn: "1 / span 2" }}>
+          <button type="button" onClick={() => setShowFees(!showFees)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.accentDark }}>{showFees ? "▾" : "▸"} Ανάλυση αμοιβών{offerMonthly(offer) ? ` — ${fmtEurGr(offerMonthly(offer))} / μήνα` : ""}</button>
+          {showFees ? <div style={{ marginTop: 10 }}><OfferFields v={offer} set={setOffer} /></div> : <div style={{ marginTop: 8 }}><Field label="Εκτιμώμενη αμοιβή (€ / μήνα) — χρησιμοποιείται αν δεν συμπληρωθεί η ανάλυση"><input type="number" style={inputStyle} value={f.fee} onChange={set("fee")} /></Field></div>}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={busy}>Save</Btn></div>
+    </Modal>
+  );
+}
+
 function NewLeadModal({ user, employees, onClose, onSaved }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [phone, setPhone] = useState("");
   const [contact, setContact] = useState(""); const [source, setSource] = useState(""); const [fee, setFee] = useState("");
@@ -8193,9 +8238,10 @@ function NewLeadModal({ user, employees, onClose, onSaved }) {
   );
 }
 
-function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, templates, refetchClients, refetchTasks, refetchNotes, onOpenCard }) {
+function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, templates, refetchContacts, refetchClients, refetchTasks, refetchNotes, onOpenCard }) {
   const [mine, setMine] = useState(false);
   const [newModal, setNewModal] = useState(false);
+  const [editLead, setEditLead] = useState(null);
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
   const leads = clients.filter((c) => c.lifecycle === "lead" && (!mine || c.accountManagerId === user.id));
   const cutoff = Date.now() - 90 * 86400000;
@@ -8238,7 +8284,10 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
                   const idle = leadIdleDays(c);
                   return (
                     <div key={c.id} style={{ background: C.surface, border: `1px solid ${idle > 7 ? C.danger : C.border}`, borderRadius: 8, padding: 10, fontFamily: sans }}>
-                      <button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13.5, fontWeight: 700, color: C.accentDark, textAlign: "left" }}>{c.name}</button>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                        <button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13.5, fontWeight: 700, color: C.accentDark, textAlign: "left" }}>{c.name}{c.legalForm ? <span style={{ fontWeight: 500, color: C.inkMuted }}> · {c.legalForm}</span> : null}</button>
+                        <button onClick={() => setEditLead(c)} style={iconBtnStyle} title="Επεξεργασία στοιχείων"><Pencil size={13} color={C.inkMuted} /></button>
+                      </div>
                       <div style={{ fontSize: 12, color: C.inkMuted, marginTop: 3 }}>{empName(c.accountManagerId)}{c.expectedFee ? ` · ${fmtEur(c.expectedFee)}/μήνα` : ""}{c.leadSource ? ` · ${c.leadSource}` : ""}</div>
                       {(() => { const ot = tasks.filter((t) => t.clientId === c.id && t.status !== "done").sort((x, y) => (x.dueDate || "9").localeCompare(y.dueDate || "9")); const t0 = ot[0]; return (
                         <div style={{ fontSize: 12.5, color: t0 && t0.dueDate && t0.dueDate < toKey(TODAY) ? C.danger : C.ink, marginTop: 6 }}>
@@ -8276,6 +8325,7 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
           ))}
         </Panel>
       </div>
+      {editLead && <EditLeadModal client={editLead} employees={employees} contacts={contacts} onClose={() => setEditLead(null)} onSaved={() => { setEditLead(null); refetchClients(); if (refetchContacts) refetchContacts(); }} />}
       {newModal && <NewLeadModal user={user} employees={employees} onClose={() => setNewModal(false)} onSaved={() => { setNewModal(false); refetchClients(); }} />}
     </div>
   );
@@ -9164,7 +9214,7 @@ export default function App() {
           <AdminClients user={user} clients={clients} refetchClients={refetchClients} entries={entries} onOpenCard={openClientCard} tasks={tasks} templates={templates} refetchTasks={refetchTasks} amlRecords={amlRecords} employees={employees} />
         )}
         {view === "pipeline" && (
-          <PipelinePage user={user} clients={clients} employees={employees} contacts={contacts} firm={firm} tasks={tasks} templates={templates} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} onOpenCard={openClientCard} />
+          <PipelinePage user={user} clients={clients} employees={employees} contacts={contacts} firm={firm} tasks={tasks} templates={templates} refetchContacts={refetchContacts} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} onOpenCard={openClientCard} />
         )}
         {view === "clientcard" && (
           <ClientCard user={user} client={clients.find((c) => c.id === cardClientId)} employees={employees} contacts={contacts} notes={notes} tasks={tasks} entries={entries} templates={templates}
