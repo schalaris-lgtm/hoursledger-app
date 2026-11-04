@@ -8242,6 +8242,7 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
   const [mine, setMine] = useState(false);
   const [newModal, setNewModal] = useState(false);
   const [editLead, setEditLead] = useState(null);
+  const [taskEdit, setTaskEdit] = useState(null);
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
   const leads = clients.filter((c) => c.lifecycle === "lead" && (!mine || c.accountManagerId === user.id));
   const cutoff = Date.now() - 90 * 86400000;
@@ -8289,9 +8290,15 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
                         <button onClick={() => setEditLead(c)} style={iconBtnStyle} title="Επεξεργασία στοιχείων"><Pencil size={13} color={C.inkMuted} /></button>
                       </div>
                       <div style={{ fontSize: 12, color: C.inkMuted, marginTop: 3 }}>{empName(c.accountManagerId)}{c.expectedFee ? ` · ${fmtEur(c.expectedFee)}/μήνα` : ""}{c.leadSource ? ` · ${c.leadSource}` : ""}</div>
-                      {(() => { const ot = tasks.filter((t) => t.clientId === c.id && t.status !== "done").sort((x, y) => (x.dueDate || "9").localeCompare(y.dueDate || "9")); const t0 = ot[0]; return (
-                        <div style={{ fontSize: 12.5, color: t0 && t0.dueDate && t0.dueDate < toKey(TODAY) ? C.danger : C.ink, marginTop: 6 }}>
-                          {t0 ? <>➜ {t0.title}{t0.dueDate ? <> · <strong>{fmtDateGr(t0.dueDate)}</strong></> : ""}{ot.length > 1 ? ` (+${ot.length - 1})` : ""}</> : <span style={{ color: C.inkFaint }}>Χωρίς ανοιχτό task</span>}
+                      {(() => { const ot = tasks.filter((t) => t.clientId === c.id && t.status !== "done").sort((x, y) => (x.dueDate || "9").localeCompare(y.dueDate || "9")); return (
+                        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                          {ot.length === 0 && <span style={{ fontSize: 12.5, color: C.inkFaint }}>Χωρίς ανοιχτό task</span>}
+                          {ot.slice(0, 3).map((t) => (
+                            <button key={t.id} onClick={() => setTaskEdit(t)} title="Επεξεργασία task" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontFamily: sans, fontSize: 12.5, color: t.dueDate && t.dueDate < toKey(TODAY) ? C.danger : C.ink }}>
+                              ➜ {t.title}{t.dueDate ? <> · <strong>{fmtDateGr(t.dueDate)}</strong></> : ""}
+                            </button>
+                          ))}
+                          {ot.length > 3 && <span style={{ fontSize: 11.5, color: C.inkFaint }}>+{ot.length - 3} ακόμα — στην καρτέλα του πελάτη</span>}
                         </div>); })()}
                       <div style={{ fontSize: 11.5, color: idle > 7 ? C.danger : C.inkFaint, marginTop: 4 }}>Στο στάδιο {idle} μ.{idle > 7 ? " · στάσιμο" : ""}</div>
                       <div style={{ marginTop: 8 }}><LeadControls compact client={c} user={user} employees={employees} contacts={contacts} firm={firm} templates={templates} tasks={tasks} refetchClients={refetchClients} refetchTasks={refetchTasks} refetchNotes={refetchNotes} /></div>
@@ -8325,6 +8332,7 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
           ))}
         </Panel>
       </div>
+      {taskEdit && <TaskModal user={user} task={taskEdit} clients={clients} employees={employees} onClose={() => setTaskEdit(null)} onSaved={refetchTasks} />}
       {editLead && <EditLeadModal client={editLead} employees={employees} contacts={contacts} onClose={() => setEditLead(null)} onSaved={() => { setEditLead(null); refetchClients(); if (refetchContacts) refetchContacts(); }} />}
       {newModal && <NewLeadModal user={user} employees={employees} onClose={() => setNewModal(false)} onSaved={() => { setNewModal(false); refetchClients(); }} />}
     </div>
