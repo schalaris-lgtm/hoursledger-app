@@ -1226,7 +1226,7 @@ const mapClientRow = (r) => ({
   afm: r.afm || "", doy: r.doy || "", legalForm: r.legal_form || "", address: r.address || "", email: r.email || "", phone: r.phone || "",
   accountManagerId: r.account_manager_id || null, generalNotes: r.general_notes || "",
   representativeName: r.representative_name || "", representativeAfm: r.representative_afm || "", representativeIdType: r.representative_id_type || "", representativeIdNumber: r.representative_id_number || "", representativeEmail: r.representative_email || "", representativePhone: r.representative_phone || "",
-  lifecycle: r.lifecycle || "live", goLiveDate: r.go_live_date || null, engagementDate: r.engagement_date || null, leadSource: r.lead_source || "", expectedFee: r.expected_fee === null || r.expected_fee === undefined ? null : Number(r.expected_fee),
+  lifecycle: r.lifecycle || "live", goLiveDate: r.go_live_date || null, engagementDate: r.engagement_date || null, leadSource: r.lead_source || "", expectedGoLive: r.expected_go_live || null, expectedFee: r.expected_fee === null || r.expected_fee === undefined ? null : Number(r.expected_fee),
   contractStatus: r.contract_status || "none", contractSignedOn: r.contract_signed_on || null, contractVersion: Number(r.contract_version) || 1, contractSpecialTerms: r.contract_special_terms || "", contractPaymentTerms: r.contract_payment_terms || "",
   contractServicesText: r.contract_services_text || "", contractPayrollBaseFee: r.contract_payroll_base_fee === null || r.contract_payroll_base_fee === undefined ? null : Number(r.contract_payroll_base_fee),
   contractPayrollIncluded: r.contract_payroll_included === null || r.contract_payroll_included === undefined ? null : Number(r.contract_payroll_included), contractPayrollExtraFee: r.contract_payroll_extra_fee === null || r.contract_payroll_extra_fee === undefined ? null : Number(r.contract_payroll_extra_fee),
@@ -8056,7 +8056,7 @@ async function winLead(client, templates, tasks, user) {
 
 
 // ---------- Offer (προσφορά) for a lead: fee analysis + PDF ----------
-const emptyOffer = (c) => ({ monthlyFee: "", payrollBase: "", payrollIncluded: "2", payrollExtra: "", annualFee: "", formationFee: "", hourlyRate: "", otherText: "", services: CONTRACT_DEFAULT_SERVICES, validDays: "30", notes: "", to: "", ...(c?.proposal || {}) });
+const emptyOffer = (c) => ({ monthlyFee: "", payrollBase: "", payrollIncluded: "2", payrollExtra: "", annualFee: "", formationFee: "", otherOneOff: "", hourlyRate: "", otherText: "", services: CONTRACT_DEFAULT_SERVICES, validDays: "30", notes: "", to: "", ...(c?.proposal || {}) });
 const offerNum = (x) => (x === "" || x === null || x === undefined || isNaN(Number(x)) ? null : Number(x));
 const offerMonthly = (o) => (offerNum(o.monthlyFee) || 0) + (offerNum(o.payrollBase) || 0);
 
@@ -8070,6 +8070,7 @@ function OfferFields({ v, set }) {
       <Field label="Κάθε επιπλέον υπάλληλος (€ / μήνα)"><input type="number" style={inputStyle} {...f("payrollExtra")} /></Field>
       <Field label="Ετήσιες εργασίες — ισολογισμός, δήλωση (€ / έτος)"><input type="number" style={inputStyle} {...f("annualFee")} /></Field>
       <Field label="Έναρξη / σύσταση επιχείρησης (€ εφάπαξ)"><input type="number" style={inputStyle} {...f("formationFee")} /></Field>
+      <Field label="Λοιπά one-off έσοδα (€ εφάπαξ)"><input type="number" style={inputStyle} {...f("otherOneOff")} /></Field>
       <Field label="Πρόσθετες εργασίες ad-hoc (€ / ώρα)"><input type="number" style={inputStyle} {...f("hourlyRate")} /></Field>
       <div style={{ gridColumn: "1 / span 2" }}><Field label="Λοιπές χρεώσεις / διευκρινίσεις"><textarea style={{ ...inputStyle, minHeight: 56 }} {...f("otherText")} /></Field></div>
     </div>
@@ -8086,6 +8087,7 @@ function buildProposalHtml({ client, offer, firm, preparedBy }) {
   add("Μισθοδοσία — κάθε επιπλέον υπάλληλος", o.payrollExtra, "ανά υπάλληλο, μηνιαίως, πλέον ΦΠΑ 24%");
   add("Ετήσιες εργασίες (οικονομικές καταστάσεις, δήλωση φορολογίας εισοδήματος)", o.annualFee, "ετησίως, πλέον ΦΠΑ 24%");
   add("Έναρξη δραστηριότητας / σύσταση επιχείρησης", o.formationFee, "εφάπαξ, πλέον ΦΠΑ 24%");
+  add("Λοιπές εφάπαξ εργασίες", o.otherOneOff, "εφάπαξ, πλέον ΦΠΑ 24%");
   add("Πρόσθετες εργασίες εκτός των ανωτέρω", o.hourlyRate, "ανά ώρα, πλέον ΦΠΑ 24%");
   const monthly = offerMonthly(o);
   const services = String(o.services || "").split("\n").map((l) => l.trim()).filter(Boolean);
@@ -8276,7 +8278,7 @@ function LeadControls({ client, user, employees, contacts = [], firm, templates,
 // Edit every lead detail without leaving the Pipeline page.
 function EditLeadModal({ client, employees, contacts = [], onClose, onSaved }) {
   const prim = contacts.find((c) => c.clientId === client.id && c.isPrimary) || contacts.find((c) => c.clientId === client.id);
-  const [f, setF] = useState({ name: client.name, legalForm: client.legalForm || "", afm: client.afm || "", email: client.email || "", phone: client.phone || "", source: client.leadSource || "", owner: client.accountManagerId || "", stage: client.pipelineStage, fee: client.expectedFee ? String(client.expectedFee) : "", contact: prim?.name || client.representativeName || "" });
+  const [f, setF] = useState({ name: client.name, legalForm: client.legalForm || "", afm: client.afm || "", email: client.email || "", phone: client.phone || "", source: client.leadSource || "", owner: client.accountManagerId || "", stage: client.pipelineStage, goLive: client.expectedGoLive || "", fee: client.expectedFee ? String(client.expectedFee) : "", contact: prim?.name || client.representativeName || "" });
   const [offer, setOffer] = useState(() => emptyOffer(client));
   const [showFees, setShowFees] = useState(!!client.proposal);
   const [busy, setBusy] = useState(false);
@@ -8284,10 +8286,10 @@ function EditLeadModal({ client, employees, contacts = [], onClose, onSaved }) {
   async function save() {
     if (!f.name.trim()) { window.alert("Το lead χρειάζεται όνομα."); return; }
     setBusy(true);
-    const hasOffer = offerMonthly(offer) || offerNum(offer.annualFee) || offerNum(offer.formationFee) || offerNum(offer.payrollExtra) || offerNum(offer.hourlyRate);
+    const hasOffer = offerMonthly(offer) || offerNum(offer.annualFee) || offerNum(offer.formationFee) || offerNum(offer.payrollExtra) || offerNum(offer.hourlyRate) || offerNum(offer.otherOneOff);
     const { error } = await supabase.from("clients").update({
       name: f.name.trim(), legal_form: f.legalForm || null, afm: f.afm.trim() || null, email: f.email.trim() || null, phone: f.phone.trim() || null,
-      lead_source: f.source.trim() || null, account_manager_id: f.owner || null, pipeline_stage: f.stage,
+      lead_source: f.source.trim() || null, account_manager_id: f.owner || null, pipeline_stage: f.stage, expected_go_live: f.goLive || null,
       expected_fee: offerMonthly(offer) || (f.fee === "" ? null : Number(f.fee)), proposal: hasOffer ? offer : client.proposal || null,
     }).eq("id", client.id);
     if (error) { setBusy(false); window.alert(`Couldn't save: ${error.message}`); return; }
@@ -8307,6 +8309,7 @@ function EditLeadModal({ client, employees, contacts = [], onClose, onSaved }) {
         <Field label="Πηγή"><input style={inputStyle} value={f.source} onChange={set("source")} /></Field>
         <Field label="Υπεύθυνος"><select style={inputStyle} value={f.owner} onChange={set("owner")}><option value="">—</option>{employees.filter((e) => e.active || e.id === f.owner).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
         <Field label="Στάδιο"><select style={inputStyle} value={f.stage} onChange={set("stage")}>{PIPELINE_STAGES.map((st) => <option key={st.key} value={st.key}>{st.label}</option>)}</select></Field>
+        <Field label="Πιθανή ημερομηνία go-live (για forecast)"><input type="date" style={inputStyle} value={f.goLive} onChange={set("goLive")} /></Field>
         <div style={{ gridColumn: "1 / span 2" }}>
           <button type="button" onClick={() => setShowFees(!showFees)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.accentDark }}>{showFees ? "▾" : "▸"} Ανάλυση αμοιβών{offerMonthly(offer) ? ` — ${fmtEurGr(offerMonthly(offer))} / μήνα` : ""}</button>
           {showFees ? <div style={{ marginTop: 10 }}><OfferFields v={offer} set={setOffer} /></div> : <div style={{ marginTop: 8 }}><Field label="Εκτιμώμενη αμοιβή (€ / μήνα) — χρησιμοποιείται αν δεν συμπληρωθεί η ανάλυση"><input type="number" style={inputStyle} value={f.fee} onChange={set("fee")} /></Field></div>}
@@ -8321,6 +8324,7 @@ function NewLeadModal({ user, employees, onClose, onSaved }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [phone, setPhone] = useState("");
   const [contact, setContact] = useState(""); const [source, setSource] = useState(""); const [fee, setFee] = useState("");
   const [owner, setOwner] = useState(user.id);
+  const [goLive, setGoLive] = useState("");
   const [legalForm, setLegalForm] = useState("");
   const [offer, setOffer] = useState(emptyOffer(null));
   const [showFees, setShowFees] = useState(false);
@@ -8330,7 +8334,7 @@ function NewLeadModal({ user, employees, onClose, onSaved }) {
     setBusy(true);
     const { data, error } = await supabase.from("clients").insert({
       name: name.trim(), lifecycle: "lead", pipeline_stage: "new", account_manager_id: owner || null, email: email.trim() || null, phone: phone.trim() || null,
-      lead_source: source.trim() || null, legal_form: legalForm || null, expected_fee: offerMonthly(offer) || (fee === "" ? null : Number(fee)), proposal: offerMonthly(offer) || offerNum(offer.annualFee) || offerNum(offer.formationFee) || offerNum(offer.payrollExtra) || offerNum(offer.hourlyRate) ? offer : null,
+      lead_source: source.trim() || null, legal_form: legalForm || null, expected_go_live: goLive || null, expected_fee: offerMonthly(offer) || (fee === "" ? null : Number(fee)), proposal: offerMonthly(offer) || offerNum(offer.annualFee) || offerNum(offer.formationFee) || offerNum(offer.payrollExtra) || offerNum(offer.hourlyRate) || offerNum(offer.otherOneOff) ? offer : null,
     }).select().single();
     if (error || !data) { setBusy(false); window.alert(`Couldn't create lead: ${error ? error.message : "unknown error"}`); return; }
     await syncClientContacts(data.id, { name: name.trim(), email: email.trim(), phone: phone.trim(), repName: contact.trim(), repEmail: email.trim(), repPhone: phone.trim() }, []);
@@ -8353,6 +8357,7 @@ function NewLeadModal({ user, employees, onClose, onSaved }) {
             <option value="">—</option>{employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </Field>
+        <Field label="Πιθανή ημερομηνία go-live (για forecast)"><input type="date" style={inputStyle} value={goLive} onChange={(e) => setGoLive(e.target.value)} /></Field>
         <div style={{ gridColumn: "1 / span 2" }}>
           <button type="button" onClick={() => setShowFees(!showFees)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.accentDark }}>{showFees ? "▾" : "▸"} Ανάλυση αμοιβών{offerMonthly(offer) ? ` — ${fmtEurGr(offerMonthly(offer))} / μήνα` : ""}</button>
           {showFees && <div style={{ marginTop: 10 }}><OfferFields v={offer} set={setOffer} /></div>}
@@ -8363,11 +8368,37 @@ function NewLeadModal({ user, employees, onClose, onSaved }) {
   );
 }
 
+// ---------- Pipeline forecast: what the open leads are expected to bring, by calendar year ----------
+// A lead counts from its "prospective go-live" date: monthly fees (offer, or the estimated monthly fee) accrue
+// day by day from that date, the annual work fee accrues 1/12 per month, one-off fees (formation + other one-off)
+// fall in the year of the go-live. Weighted = × the chance of the lead's stage (editable by an admin).
+const DEFAULT_STAGE_PROB = { new: 10, contact: 25, proposal: 50, agreement: 80 };
+function leadForecastForYear(c, year) {
+  if (!c.expectedGoLive) return null;
+  const start = fromKey(c.expectedGoLive);
+  const o = c.proposal || {};
+  const monthly = offerMonthly(o) || c.expectedFee || 0;
+  const annual = offerNum(o.annualFee) || 0;
+  const oneOff = (offerNum(o.formationFee) || 0) + (offerNum(o.otherOneOff) || 0);
+  let recurring = 0, annualWork = 0;
+  for (let m = 0; m < 12; m++) {
+    const ms = new Date(year, m, 1), me = endOfMonth(ms);
+    if (me < start) continue;
+    const first = start > ms ? start : ms;
+    const share = (Math.round((me - first) / 86400000) + 1) / me.getDate();
+    recurring += monthly * share;
+    annualWork += (annual / 12) * share;
+  }
+  return { recurring, annualWork, oneOff: start.getFullYear() === year ? oneOff : 0 };
+}
+
 function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, templates, refetchContacts, refetchClients, refetchTasks, refetchNotes, onOpenCard }) {
   const [mine, setMine] = useState(false);
   const [newModal, setNewModal] = useState(false);
   const [editLead, setEditLead] = useState(null);
   const [taskEdit, setTaskEdit] = useState(null);
+  const [probsRaw, saveProbs] = useAppSetting("pipeline_probabilities", DEFAULT_STAGE_PROB);
+  const probs = { ...DEFAULT_STAGE_PROB, ...(probsRaw || {}) };
   const empName = (id) => employees.find((e) => e.id === id)?.name || "—";
   const leads = clients.filter((c) => c.lifecycle === "lead" && (!mine || c.accountManagerId === user.id));
   const cutoff = Date.now() - 90 * 86400000;
@@ -8396,6 +8427,50 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
         <StatCard label="Won / Lost (90 μέρες)" value={`${recentWon.length} / ${recentLost.length}`} accent={C.accent} sub={decided ? `${Math.round((recentWon.length / decided) * 100)}% μετατροπή` : "—"} />
       </div>
 
+      {(() => {
+        const years = [TODAY.getFullYear(), TODAY.getFullYear() + 1, TODAY.getFullYear() + 2];
+        const existing = clients.filter((c) => c.lifecycle !== "lead" && c.lifecycle !== "lost");
+        const withDate = leads.filter((c) => c.expectedGoLive);
+        const noDate = leads.filter((c) => !c.expectedGoLive && (c.expectedFee || offerMonthly(c.proposal || {}) || offerNum((c.proposal || {}).formationFee) || offerNum((c.proposal || {}).otherOneOff)));
+        const cols = years.map((y) => {
+          const ys = new Date(y, 0, 1), ye = new Date(y, 11, 31);
+          const ex = computePeriodTotals(existing, [], [], [], ys, ye).revenue;
+          const sum = { recurring: 0, annualWork: 0, oneOff: 0, wRecurring: 0, wAnnualWork: 0, wOneOff: 0 };
+          withDate.forEach((c) => {
+            const f = leadForecastForYear(c, y); if (!f) return;
+            const w = (Number(probs[c.pipelineStage]) || 0) / 100;
+            sum.recurring += f.recurring; sum.annualWork += f.annualWork; sum.oneOff += f.oneOff;
+            sum.wRecurring += f.recurring * w; sum.wAnnualWork += f.annualWork * w; sum.wOneOff += f.oneOff * w;
+          });
+          return { y, ex, ...sum, weighted: sum.wRecurring + sum.wAnnualWork + sum.wOneOff, unweighted: sum.recurring + sum.annualWork + sum.oneOff };
+        });
+        const row = (label, get, bold) => <tr><Td style={{ fontWeight: bold ? 700 : 400 }}>{label}</Td>{cols.map((c) => <Td key={c.y} mono right style={{ fontWeight: bold ? 700 : 600 }}>{fmtEur(get(c))}</Td>)}</tr>;
+        return (
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 18 }}>
+            <div style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Forecast εσόδων από το pipeline</div>
+            <div style={{ fontFamily: sans, fontSize: 12, color: C.inkMuted, marginBottom: 8 }}>Κάθε lead μετράει από την πιθανή ημερομηνία go-live. Σταθμισμένο = ποσό × πιθανότητα του σταδίου.</div>
+            <TableShell headers={["", ...years.map(String)]}>
+              {row("Υπάρχοντες πελάτες (με τις τρέχουσες αμοιβές)", (c) => c.ex)}
+              {row("Pipeline — μηνιαίες αμοιβές (σταθμισμένο)", (c) => c.wRecurring)}
+              {row("Pipeline — ετήσιες εργασίες (σταθμισμένο)", (c) => c.wAnnualWork)}
+              {row("Pipeline — one-off έσοδα (σταθμισμένο)", (c) => c.wOneOff)}
+              {row("Σύνολο forecast", (c) => c.ex + c.weighted, true)}
+              <tr><Td style={{ color: C.inkMuted }}>Pipeline χωρίς στάθμιση (100%)</Td>{cols.map((c) => <Td key={c.y} mono right style={{ color: C.inkMuted }}>{fmtEur(c.unweighted)}</Td>)}</tr>
+            </TableShell>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontFamily: sans, fontSize: 12, color: C.inkMuted }}>
+              <span>Πιθανότητα ανά στάδιο:</span>
+              {PIPELINE_STAGES.map((st) => (
+                <label key={st.key} style={{ display: "flex", gap: 4, alignItems: "center" }}>{st.label}
+                  <input key={st.key + probs[st.key]} type="number" min="0" max="100" defaultValue={probs[st.key]} disabled={user.role !== "admin"} style={{ ...inputStyle, width: 58, padding: "3px 6px" }}
+                    onBlur={(e) => { const v = Math.max(0, Math.min(100, Number(e.target.value) || 0)); if (v !== probs[st.key]) saveProbs({ ...probs, [st.key]: v }); }} />%
+                </label>
+              ))}
+            </div>
+            {noDate.length > 0 && <div style={{ fontFamily: sans, fontSize: 12, color: C.warn || C.danger, marginTop: 8 }}>Δεν υπολογίζονται {noDate.length} leads χωρίς πιθανή ημερομηνία go-live: {noDate.slice(0, 8).map((c) => c.name).join(", ")}{noDate.length > 8 ? "…" : ""}. Πρόσθεσέ την από το ✎ στην κάρτα.</div>}
+          </div>
+        );
+      })()}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12, alignItems: "start", marginBottom: 22 }}>
         {PIPELINE_STAGES.map((st) => {
           const list = leads.filter((c) => c.pipelineStage === st.key).sort((a, b) => (a.stageChangedAt || "").localeCompare(b.stageChangedAt || ""));
@@ -8414,7 +8489,7 @@ function PipelinePage({ user, clients, employees, contacts = [], firm, tasks, te
                         <button onClick={() => onOpenCard(c.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: sans, fontSize: 13.5, fontWeight: 700, color: C.accentDark, textAlign: "left" }}>{c.name}{c.legalForm ? <span style={{ fontWeight: 500, color: C.inkMuted }}> · {c.legalForm}</span> : null}</button>
                         <button onClick={() => setEditLead(c)} style={iconBtnStyle} title="Επεξεργασία στοιχείων"><Pencil size={13} color={C.inkMuted} /></button>
                       </div>
-                      <div style={{ fontSize: 12, color: C.inkMuted, marginTop: 3 }}>{empName(c.accountManagerId)}{c.expectedFee ? ` · ${fmtEur(c.expectedFee)}/μήνα` : ""}{c.leadSource ? ` · ${c.leadSource}` : ""}</div>
+                      <div style={{ fontSize: 12, color: C.inkMuted, marginTop: 3 }}>{empName(c.accountManagerId)}{c.expectedFee ? ` · ${fmtEur(c.expectedFee)}/μήνα` : ""}{c.leadSource ? ` · ${c.leadSource}` : ""}{c.expectedGoLive ? ` · go-live ${fmtDateGr(c.expectedGoLive)}` : ""}</div>
                       {(() => { const ot = tasks.filter((t) => t.clientId === c.id && t.status !== "done").sort((x, y) => (x.dueDate || "9").localeCompare(y.dueDate || "9")); return (
                         <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
                           {ot.length === 0 && <span style={{ fontSize: 12.5, color: C.inkFaint }}>Χωρίς ανοιχτό task</span>}
